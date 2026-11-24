@@ -230,3 +230,9 @@ body.full-map #panel{display:none!important}
 .chat-search-hit{border-bottom:1px solid #213745;padding:12px 0;overflow-wrap:anywhere}
 .chat-search-hit strong{color:#a8d2cd}.chat-search-hit p{white-space:pre-wrap;color:#a8bdc7;font-size:12px}
 #calculatorResult{font:20px system-ui,sans-serif;overflow-wrap:anywhere}
+
+#reportsDialog{width:min(850px,calc(100% - 28px))}
+#reportMonthLabel[hidden]{display:none}
+#reportOutput{padding:12px 0;overflow-wrap:anywhere}
+#reportOutput p{margin:6px 0;color:#a7c8c9}
+#reportOutput small{display:block;margin:10px 0;color:#89a3af}
