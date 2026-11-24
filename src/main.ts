@@ -620,7 +620,7 @@ function updateToolState(){
  const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
  byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
  byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
- for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport"])byId<HTMLButtonElement>(id).disabled=busy;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport","toolWeb"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
 byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
@@ -696,6 +696,51 @@ byId("agentSave").onclick=()=>void agentAction(async()=>{const name=byId<HTMLInp
 byId("agentReplay").onclick=()=>void agentAction(async()=>{if(!agentScenarios.value)throw Error("Выберите сценарий");showAgentResult(await agentApi<AgentResult>("replay",{id:agentScenarios.value}));await refreshAgent()});
 byId("agentQueue").onclick=()=>void agentAction(async()=>{const value=byId<HTMLInputElement>("agentDue").value;if(!value||!agentScenarios.value)throw Error("Выберите сценарий и время");const due=new Date(value);if(!Number.isFinite(due.getTime()))throw Error("Некорректное время");await agentApi("queue",{scenario:agentScenarios.value,due:due.toISOString()});await refreshAgent();agentOutput.textContent="Задача добавлена в локальную очередь"});
 byId("agentMileageSave").onclick=()=>void agentAction(async()=>{const v=Number(byId<HTMLInputElement>("agentVehicle").value),km=Number(byId<HTMLInputElement>("agentKm").value);if(!confirm("Сохранить месячный пробег автомобиля #"+v+"?"))return;await agentApi("mileage",{vehicle:v,month:agentMonth.value,km});agentOutput.textContent="Пробег сохранён"});
+type WebPage={url:string;title:string;text:string;published:string;modified:string;fetched:string;cached?:boolean};
+type WebItem={url:string;title:string;published:string;publisher:string};
+type WebWatch={id:string;url:string;status:string;enabled:number;checked:string};
+type WebResult={items?:WebItem[]|WebWatch[];pages?:WebPage[];overlaps?:{a:string;b:string;terms:string[]}[];errors?:{url:string;error:string}[];queries?:string[];note?:string;provider?:string;fetched?:string;cached?:boolean;title?:string;text?:string;url?:string;published?:string;modified?:string;name?:string;status?:string};
+const webDialog=byId<HTMLDialogElement>("webDialog"),webActionSelect=byId<HTMLSelectElement>("webAction"),webInput=byId<HTMLInputElement>("webInput"),webOutput=byId("webOutput");
+let webBusy=false;
+function webFields(){const action=webActionSelect.value;webInput.required=action!=="watches";byId("webInputLabel").hidden=action==="watches";webInput.placeholder=["read","download","watch"].includes(action)?"https://…":"Поисковый запрос (публичный)"}
+webActionSelect.onchange=webFields;
+function webText(s:string){const p=document.createElement("p");p.textContent=s;webOutput.append(p)}
+function webLink(url:string,title:string){
+ const a=document.createElement("a");try{if(new URL(url).protocol!=="https:")return}catch{return}
+ a.href=url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=title;webOutput.append(a)
+}
+function pageCard(page:WebPage){webLink(page.url,page.title);webText("Публикация: "+(page.published||"не указана")+" · получено: "+page.fetched+(page.cached?" · кеш":""));if(page.modified)webText("Last-Modified: "+page.modified);webText(page.text)}
+async function webRun(action:string,input?:string){
+ if(webBusy)return;if(localOnly&&action!=="watches"&&action!=="disable"){webOutput.textContent="Отключите локальный режим для доступа в интернет.";return}
+ webBusy=true;webOutput.textContent="Выполнение…";
+ const body:Record<string,string|boolean>={action,confirm:true};
+ if(["search","news","research"].includes(action))body.query=input??"";
+ else if(action==="disable")body.id=input??"";
+ else if(action!=="watches")body.url=input??"";
+ try{
+  const r=await agentApi<WebResult>("web",body);webOutput.replaceChildren();
+  if(r.provider)webText(r.provider+" · "+(r.fetched??"")+(r.cached?" · кеш":""));
+  if(r.queries)webText("Запросы: "+r.queries.join(" / "));
+  if(r.pages)for(const page of r.pages)pageCard(page);
+  if(r.overlaps?.length)for(const overlap of r.overlaps)webText("Общие термины: "+overlap.terms.join(", ")+" · "+overlap.a+" ↔ "+overlap.b);
+  if(r.errors)for(const error of r.errors)webText(error.url+": "+error.error);
+  if(r.note)webText(r.note);
+  if(r.items)for(const item of r.items){
+   if("id" in item){webLink(item.url,item.url);webText(item.status+" · "+item.checked+(item.enabled?" · включено":" · выключено"));if(item.enabled){const b=document.createElement("button");b.type="button";b.textContent="Остановить наблюдение";b.onclick=()=>void webRun("disable",item.id);webOutput.append(b)}}
+   else{webLink(item.url,item.title);webText((item.publisher||"")+(item.published?" · "+item.published:""))}
+  }
+  if(r.title&&r.url&&r.text!==undefined)pageCard(r as WebPage);
+  if(r.name){webText("Сохранено в Документы: "+r.name);await refreshWorkspaceMap(true)}
+  if(r.status)webText(r.status+" · "+(r.url??""));
+  if(action==="disable")webText("Наблюдение выключено. Обновите список.");
+  if(!webOutput.children.length)webText("Нет результатов");
+ }catch(e){webOutput.textContent=e instanceof Error?e.message:"Ошибка интернет-инструмента"}finally{webBusy=false}
+}
+byId("toolWeb").onclick=()=>{closeTools();webFields();webDialog.showModal()};
+byId("webClose").onclick=()=>webDialog.close();
+byId<HTMLFormElement>("webForm").onsubmit=e=>{e.preventDefault();const action=webActionSelect.value,input=webInput.value.trim();if(action==="watch"&&!confirm("Разрешить автоматическую проверку этого публичного сайта раз в час при работающем сервере?"))return;void webRun(action,input)};
+byId("webCopy").onclick=()=>void copyText(webOutput.innerText);
+byId("webToChat").onclick=()=>{if(busy||selected>=0)return;const excerpt=webOutput.innerText.trim();if(!excerpt)return;chatPrompt.value=("Проанализируй эти интернет-выдержки (не проверенные факты):\n"+excerpt).slice(0,1000);resizePrompt();webDialog.close();chatPrompt.focus()};
 type ImportPlan={token:string;kind:string;title:string;count:number;rows:Record<string,string|number|null>[]};
 const importDialog=byId<HTMLDialogElement>("importDialog"),importFile=byId<HTMLSelectElement>("importFile"),importKind=byId<HTMLSelectElement>("importKind"),importOutput=byId("importOutput"),importCommit=byId<HTMLButtonElement>("importCommit");
 let importPlan:ImportPlan|null=null,importBusy=false;

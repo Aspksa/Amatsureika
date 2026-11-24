@@ -112,6 +112,7 @@ def read_page(r):
     return {"url":r["url"],"title":title,"text":text,"published":date,"modified":r["modified"],"fetched":stamp(),"hash":hashlib.sha256(text.encode()).hexdigest()}
 
 def safe_link(url):
+    if not isinstance(url,str):return False
     try:
         p=urlsplit(url)
         return p.scheme=="https" and p.hostname and not p.username and not p.password and p.port in (None,443) and len(url)<=2048
@@ -172,7 +173,8 @@ class WebResearch:
             url=base+urlencode({"q":q+" when:7d","hl":"ru","gl":"RU","ceid":"RU:ru"} if news else {"q":q})
             raw=self.request(url)
             if news and raw["mime"] not in ("application/rss+xml","application/xml","text/xml"):raise ValueError("Поставщик не вернул RSS")
-            items=search_results(raw["body"],news)
+            try:items=search_results(raw["body"],news)
+            except (ValueError,ET.ParseError) as e:raise ValueError("Не удалось прочитать результаты поиска") from None
             if not items:raise ValueError("Поставщик не вернул результаты; возможно, ограничил автоматический доступ")
             return {"query":q,"items":items,"fetched":stamp(),"provider":"Google News RSS" if news else "DuckDuckGo HTML"}
         return self.cached(("news:" if news else "search:")+q,load)
