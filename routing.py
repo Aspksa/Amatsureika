@@ -2,6 +2,7 @@
 import json
 from tool_engine import ToolEngine, catalog, command, report_text
 from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
+from agent_engine import Agent, parse as agent_parse
 import ast
 from decimal import Decimal, localcontext, DecimalException
 import re
@@ -67,6 +68,7 @@ class Router:
         self.chat,self.workspace,self.cloud=chat,workspace,cloud
         self.tools=ToolEngine(workspace,chat)
         self.advanced=AdvancedTools(workspace,self.tools,extract)
+        self.agent=Agent(chat,workspace,self.tools,self.advanced)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
@@ -164,7 +166,7 @@ class Router:
             offsets={};total=0
             for p in pages: offsets[p["id"]]=total;total+=p["count"]
             for r in chatrows:
-                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite","Комплексный локальный отчёт","Локальная проверка аномалий","Сравнение извлечённого текста","Изменение сохранено локально","Изменение уже сохранено","Изменение не выполнено")): continue
+                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite","Комплексный локальный отчёт","Локальная проверка аномалий","Сравнение извлечённого текста","Изменение сохранено локально","Изменение уже сохранено","Изменение не выполнено","Локальный сценарий:")): continue
                 block=(offsets[r["cluster_id"]]+r["position"]-1)//500+1
                 candidates.append(("memory",block,"Сообщение #"+str(r["id"])+" ("+r["role"]+")",r["text"],r["created_at"],r["id"]))
         hits=[]
@@ -197,6 +199,9 @@ class Router:
         q=value["text"]
         task=parse_command(q)
         advanced_answer=None;advanced_sources=[];mutation=None
+        with closing(self.chat.connect()) as db:
+            previous=db.execute("SELECT text FROM chat_messages WHERE role='user' AND request_id!=? ORDER BY id DESC LIMIT 1",(value["request_id"],)).fetchone()
+        agent_steps=agent_parse(q,previous[0] if previous else None) if not task else None
         receipt=self.workspace.edit_receipt(value["request_id"],q)
         if receipt:
             advanced_answer="Изменение уже сохранено: запись #"+str(receipt["id"])+" · "+receipt["label"]
@@ -215,6 +220,10 @@ class Router:
                 mutation=self.advanced.preview(*args)
                 advanced_answer="Изменение не выполнено: требуется подтверждение."
                 advanced_sources=[{"source":"work","id":mutation["id"],"title":mutation["label"]}]
+        if agent_steps and advanced_answer is None:
+            run=self.agent.run(agent_steps)
+            advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
+            advanced_sources=[h for s in run["steps"] for h in s["sources"]]
         tool=command(q) if advanced_answer is None else None
         report=self.tools.run(tool) if tool else None
         hits=self.search(q) if report is None and advanced_answer is None else []
