@@ -89,3 +89,17 @@ for(const mode of ["radial","compact","hex"])for(const n of [0,1,50,2000,20000])
  assert.equal(collisions([...a.centers.map(p=>({p,r:12})),...docs]),0);
 }
 console.log("Orbit V2 stable radial/circular/hex layouts, icon clearance and file growth passed");
+
+const {workspaceSectors,dataOrbit,WORK_KINDS}=await import("../public/geometry.js");
+for(const mode of ["radial","compact","hex"])for(const n of [0,1,100,2000]){
+ const mem=directedBlockLayout(n,mode);
+ const work=Array.from({length:n},(_,i)=>({kind:WORK_KINDS[i%5]}));
+ const w=workspaceSectors(mode,mem.edge,n,work),next=workspaceSectors(mode,mem.edge,n+1,[...work,{kind:"staff"}]);
+ assert.deepEqual(w.files,next.files.slice(0,n));assert.deepEqual(w.work,next.work.slice(0,n));
+ const icons=dataOrbit(Math.max(mem.outer,w.edge+72));
+ assert.equal(icons.length,5);assert(Math.abs(icons[4].x)<1e-6&&icons[4].y<0);
+ const points=[...mem.centers,...w.files,...w.work].map(p=>({p,r:12})).concat(icons.map(p=>({p,r:19})));
+ assert.equal(collisions(points),0,mode+" "+n);
+ assert(points.every(x=>valid(x.p)));
+}
+console.log("Independent work/document sectors and orbit clearance passed");

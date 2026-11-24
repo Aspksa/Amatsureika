@@ -184,3 +184,15 @@ body.full-map #stage{visibility:visible!important;flex:1!important;width:100%!im
 body.full-map #panel{display:none!important}
 .workspace-dialog::backdrop{background:#02080d66;backdrop-filter:none}
 @media(max-width:720px){.map-counts{left:8px;bottom:34px;font-size:9px}.zoom #fullMap{font-size:9px}}
+
+/* Live independent data sectors inside the shared orbit. */
+.work-dot{opacity:.78;cursor:pointer;outline:none}
+.work-dot:hover,.work-dot:focus-visible{stroke:#fff0d3;stroke-width:1.2}
+.sector-link{stroke-width:.65;opacity:.22;pointer-events:none;vector-effect:non-scaling-stroke}
+.work-dot.arrived-memory,.document-dot.arrived-memory{filter:drop-shadow(0 0 4px currentColor);stroke:#f8e7c8;stroke-width:1.3}
+.work-dot,.document-dot{transition:stroke .35s,filter .35s}
+
+/* Chat is a real orbital entry, with the same accessible toggle as the header. */
+#chatIcon{color:#77d9c7}
+#chatIcon.chat-open .cloud-shell{stroke-opacity:1}
+#chatIcon.arrived-reply .cloud-shell{stroke:#bacff4!important;filter:drop-shadow(0 0 4px #8eace6)!important}

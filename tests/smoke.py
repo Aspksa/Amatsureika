@@ -21,14 +21,14 @@ def session(data_dir, expected=None):
                 page = response.read()
                 assert b'class="core-title"' not in page
                 assert b'class="core-wave"' not in page
-                for icon in (b'id="workIcon"',b'id="docsIcon"',b'id="settingsIcon"',b'id="cloudIcon"'):
+                for icon in (b'id="workIcon"',b'id="docsIcon"',b'id="settingsIcon"',b'id="cloudIcon"',b'id="chatIcon"'):
                     assert icon in page
             with urlopen(url+"api/work",timeout=10) as response:
                 assert json.load(response)=={"records":[]}
             with urlopen(url+"api/disk",timeout=10) as response:
                 assert json.load(response)=={"entries":[],"crumbs":[]}
             with urlopen(url+"api/workspace/map",timeout=10) as response:
-                assert json.load(response)=={"files":[],"work":{}}
+                assert json.load(response)=={"files":[],"work":{},"records":[]}
             with urlopen(url + "main.js", timeout=10) as response:
                 source = response.read().decode("utf-8")
                 assert "ДОЛГОВРЕМЕННАЯ ПАМЯТЬ" not in source

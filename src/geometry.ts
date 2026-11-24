@@ -160,3 +160,37 @@ export function documentPoint(i:number,edge:number):Point{
  const row=Math.floor((Math.sqrt(8*i+1)-1)/2),col=i-row*(row+1)/2;
  return{x:(col-row/2)*28,y:Math.max(220,edge+42)+row*28};
 }
+
+export const WORK_KINDS=["staff","timesheet","cards","vehicles","fuel"] as const;
+export type WorkKind=typeof WORK_KINDS[number];
+/** Independent angular sectors with exact chord clearance. Every sector
+ * grows outward on the same inner ring. Compact/hex memory can extend
+ * beyond its own sector, so reserve its occupied radius in those modes. */
+export function sectorPoints(count:number,angle:number,halfSpan:number,base=220):Point[]{
+ const points:Point[]=[],pitch=28;
+ for(let row=0;points.length<count;row++){
+  const r=base+row*pitch,step=2*Math.asin(pitch/(2*r)),half=Math.floor(halfSpan/step);
+  for(let col=0;col<=2*half&&points.length<count;col++){
+   const offset=col===0?0:Math.ceil(col/2)*(col%2===1?1:-1);
+   points.push(polar(r,angle+offset*step));
+  }
+ }
+ return points;
+}
+export function workspaceSectors(mode:Mode,memoryEdge:number,fileCount:number,work:readonly {kind:WorkKind}[]){
+ const base=mode==="radial"?220:Math.max(220,memoryEdge+42);
+ const files=sectorPoints(fileCount,Math.PI/6,.34,base);
+ const workPoints:Point[]=Array(work.length);
+ WORK_KINDS.forEach((kind,k)=>{
+  const ids:number[]=[];work.forEach((r,i)=>{if(r.kind===kind)ids.push(i)});
+  const points=sectorPoints(ids.length,(120+k*26)*Math.PI/180,.17,base);
+  ids.forEach((i,j)=>workPoints[i]=points[j]);
+ });
+ const edge=[...files,...workPoints].reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+14),memoryEdge);
+ return{files,work:workPoints,edge};
+}
+/** Five real modules, with chat, work and documents facing their data sectors. */
+export function dataOrbit(radius:number):Point[]{
+ const r=Math.max(300,radius+22);
+ return [-65,180,30,-17,-90].map(deg=>polar(r,deg*Math.PI/180));
+}
