@@ -14,15 +14,20 @@ def session(data_dir, expected=None):
         try:
             url = proc.stdout.readline().strip()
             assert url.startswith("http://127.0.0.1:"), url
-            for path, token in (("", b"AMATSUREIKA"), ("main.js", b"createElementNS"), ("geometry.js", b"collisions"), ("style.css", b"core-ring"), ("", b"restoreDesign")):
+            for path, token in (("", b"AMATSUREIKA"), ("main.js", b"createElementNS"), ("geometry.js", b"collisions"), ("flow.js", b"runQuietFlow"), ("style.css", b"core-ring"), ("", b"restoreDesign")):
                 with urlopen(url + path, timeout=10) as response:
                     assert response.status == 200 and token in response.read(), path
             with urlopen(url, timeout=10) as response:
-                assert b'class="core-title"' not in response.read()
+                page = response.read()
+                assert b'class="core-title"' not in page
+                assert b'class="core-wave"' not in page
             with urlopen(url + "main.js", timeout=10) as response:
                 source = response.read().decode("utf-8")
                 assert "ДОЛГОВРЕМЕННАЯ ПАМЯТЬ" not in source
                 assert "/api/memory" in source
+                assert "runQuietFlow" in source
+                assert "energy-wave" not in source
+                assert "pulseQueue" not in source
                 assert "http://www.w3.org/2000/svg" in source
                 assert "http://www.w3.org/5000/svg" not in source
                 assert 'class: "memory-block"' in source
