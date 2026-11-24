@@ -14,13 +14,19 @@ def session(data_dir, expected=None):
         try:
             url = proc.stdout.readline().strip()
             assert url.startswith("http://127.0.0.1:"), url
-            for path, token in (("", b"AMATSUREIKA"), ("main.js", b"createElementNS"), ("geometry.js", b"collisions"), ("flow.js", b"runQuietFlow"), ("style.css", b"core-ring"), ("", b"restoreDesign")):
+            for path, token in (("", b"AMATSUREIKA"), ("main.js", b"createElementNS"), ("geometry.js", b"collisions"), ("flow.js", b"runQuietFlow"), ("workspace.js", b"setupWorkspace"), ("style.css", b"core-ring"), ("", b"restoreDesign")):
                 with urlopen(url + path, timeout=10) as response:
                     assert response.status == 200 and token in response.read(), path
             with urlopen(url, timeout=10) as response:
                 page = response.read()
                 assert b'class="core-title"' not in page
                 assert b'class="core-wave"' not in page
+                for icon in (b'id="workIcon"',b'id="docsIcon"',b'id="settingsIcon"',b'id="cloudIcon"'):
+                    assert icon in page
+            with urlopen(url+"api/work",timeout=10) as response:
+                assert json.load(response)=={"records":[]}
+            with urlopen(url+"api/disk",timeout=10) as response:
+                assert json.load(response)=={"entries":[],"crumbs":[]}
             with urlopen(url + "main.js", timeout=10) as response:
                 source = response.read().decode("utf-8")
                 assert "ДОЛГОВРЕМЕННАЯ ПАМЯТЬ" not in source

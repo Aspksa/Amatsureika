@@ -54,7 +54,7 @@ def find_npm(node):
 
 def build():
     node = find_node()
-    outputs = [ROOT / "public/main.js", ROOT / "public/geometry.js", ROOT / "public/flow.js"]
+    outputs = [ROOT / "public/main.js", ROOT / "public/geometry.js", ROOT / "public/flow.js", ROOT / "public/workspace.js"]
     sources = list((ROOT / "src").glob("*.ts")) + [ROOT / "tsconfig.json"]
     if not node:
         if all(p.is_file() and p.stat().st_mtime >= max(s.stat().st_mtime for s in sources) for p in outputs):

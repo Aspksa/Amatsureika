@@ -157,7 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent / "public"
-    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js")):
+    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js", "workspace.js")):
         raise SystemExit("Build the frontend first: npm run build")
     with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=DesignStore(args.data_dir / "amatsureika.db"), chat=ChatStore(args.data_dir / "amatsureika.db"), cloud=Cloud(args.data_dir / "amatsureika.db"), workspace=Workspace(args.data_dir / "amatsureika.db"))) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
