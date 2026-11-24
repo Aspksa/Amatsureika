@@ -6,6 +6,7 @@ from agent_engine import Agent, parse as agent_parse
 from work_import import Importer
 from web_research import WebResearch
 from knowledge_store import Knowledge
+from cognitive_tools import CognitiveTools
 from evidence import rank as sparse_rank, evidence_links, missing_terms
 import ast
 from decimal import Decimal, localcontext, DecimalException
@@ -76,6 +77,7 @@ class Router:
         self.importer=Importer(workspace)
         self.web=WebResearch(chat,workspace)
         self.knowledge=Knowledge(chat,cloud)
+        self.cognitive=CognitiveTools(workspace,self.knowledge,self.agent,extract)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
@@ -173,7 +175,7 @@ class Router:
             offsets={};total=0
             for p in pages: offsets[p["id"]]=total;total+=p["count"]
             for r in chatrows:
-                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite","Комплексный локальный отчёт","Локальная проверка аномалий","Сравнение извлечённого текста","Изменение сохранено локально","Изменение уже сохранено","Изменение не выполнено","Локальный сценарий:")): continue
+                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite","Комплексный локальный отчёт","Локальная проверка аномалий","Сравнение извлечённого текста","Изменение сохранено локально","Изменение уже сохранено","Изменение не выполнено","Локальный сценарий:","Локальная статистика:","Диагностика инструментов:")): continue
                 block=(offsets[r["cluster_id"]]+r["position"]-1)//500+1
                 candidates.append(("memory",block,"Сообщение #"+str(r["id"])+" ("+r["role"]+")",r["text"],r["created_at"],r["id"]))
         hits=[]
@@ -230,6 +232,17 @@ class Router:
                 mutation=self.advanced.preview(*args)
                 advanced_answer="Изменение не выполнено: требуется подтверждение."
                 advanced_sources=[{"source":"work","id":mutation["id"],"title":mutation["label"]}]
+        # Explicit deterministic analytical commands, before generic retrieval.
+        if advanced_answer is None and not attachment_ids:
+            numeric=re.fullmatch(r"(?:статистика|анализ чисел)\s*:\s*([-+0-9.,;\s]+)",q,re.I)
+            if numeric:
+                try:values=[float(x.replace(",",".")) for x in re.split(r"[;\s]+",numeric[1].strip())]
+                except ValueError:raise ValueError("Разделяйте числа пробелом или точкой с запятой")
+                out=self.cognitive.dispatch({"action":"stats","values":values})
+                advanced_answer="Локальная статистика:\n"+"\n".join(f"{k}: {out[k]:.6g}" for k in ("count","sum","mean","median","min","max","stdev","slope_per_observation","next_linear_estimate"))+"\n"+out["note"]
+            elif re.fullmatch(r"диагностика инструментов[?.]?",q,re.I):
+                out=self.cognitive.dispatch({"action":"performance"})
+                advanced_answer="Диагностика инструментов:\n"+"\n".join(f"{r['tool']} · {r['status']} · {r['n']} запусков · {r['avg_ms']:.1f} мс" for r in out["metrics"][:50])+"\n"+out["note"]
         if agent_steps and advanced_answer is None:
             run=self.agent.run(agent_steps)
             advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
