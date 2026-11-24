@@ -14,7 +14,8 @@ def cosine(a,b):
 
 def rank(terms,words):
     # Only approximate variants of words returned by bounded candidate search.
-    vectors={w:grams(w) for w in words if len(w)>=5}
+    prefixes={t[:4] for t in terms if len(t)>=5 and t not in words}
+    vectors={w:grams(w) for w in words if len(w)>=5 and w[:4] in prefixes}
     score=0;matched=[]
     for t in terms:
         if t in words:score+=1;matched.append(t);continue

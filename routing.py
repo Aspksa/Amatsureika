@@ -152,7 +152,7 @@ class Router:
             db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
             db.execute("INSERT INTO routing_workspace_fts(source,item_id,title,body) VALUES(?,?,?,?)",(source,i,title,body))
             db.execute("INSERT OR REPLACE INTO routing_workspace_versions VALUES(?,?,?)",(source,i,version))
-        for source,i in versions.keys()-metadata.keys():
+        for source,i in versions.keys()-metadata:
             db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
             db.execute("DELETE FROM routing_workspace_versions WHERE source=? AND item_id=?",(source,i))
 
@@ -328,6 +328,13 @@ class Router:
         tool=command(q) if advanced_answer is None and not attachment_ids else None
         report=self.tools.run(tool) if tool else None
         hits=self.search(question) if report is None and advanced_answer is None else []
+        if report is None and advanced_answer is None and not attachment_ids and not hits:
+            # Only lexical fallback; no cloud, no external side effects.
+            shorter=" ".join(tokens(question)[:4])
+            if shorter and shorter!=question:
+                hits=self.search(shorter)
+                meta["search_passes"]=2
+        meta.setdefault("search_passes",1 if report is None and advanced_answer is None else 0)
         attachment_hits=[]
         for rid in attachment_ids:
             path,title,size=self.workspace.download(rid)
@@ -404,6 +411,8 @@ class Router:
         if meta.get("document_summary") and count_answer is None:local=meta["document_summary"]+"\n\n"+local
         meta["sources"]=[{"source":h["source"],"id":h["id"],"title":h["title"]} for h in hits[:8]]
         meta["links"]=links[:8];meta["missing"]=missing;meta["conflicts"]=conflicts
+        meta["evidence_status"]="local_result" if count_answer is not None else "retrieval_only" if hits else "insufficient"
+        meta["source_groups"]={kind:sum(h["source"]==kind for h in hits) for kind in ("memory","work","file")}
         if missing:meta["warnings"].append("Неподтверждённые термины: "+", ".join(missing))
         if conflicts:meta["warnings"].extend(conflicts)
         plan={"web_offer":hints["web"] if not mutation and not attachment_ids else None,"metadata":meta,"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation,"missing":missing,"links":links}
@@ -443,6 +452,7 @@ class Router:
             plan["local"]+="\n\nИнтернет-результаты (не проверенные утверждения):\n"+"\n\n".join(parts)
             if not sources:plan["local"]+="\nНет доступных выдержек."
             if conflicts:plan["local"]+="\n"+"\n".join(conflicts)
+            meta["evidence_status"]="external_excerpts" if sources else "insufficient"
             plan["sufficient"]=False
             # Allow time for the subsequent independent cloud consent.
             self.plans[value["token"]]=(time.monotonic(),item[1],plan)

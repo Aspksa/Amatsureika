@@ -864,11 +864,12 @@ byId<HTMLFormElement>("knowledgeAddForm").onsubmit=e=>{e.preventDefault();void k
 byId("knowledgeConsolidate").onclick=()=>void knowledgeAction(async()=>{await knowledgeApi("consolidate");await knowledgeSearch()});
 byId("knowledgeStats").onclick=()=>void knowledgeAction(async()=>{const r=await knowledgeApi<{counts:{kind:string;state:string;n:number}[];stale:number;links:number;versions:number}>("stats");knowledgeOutput.replaceChildren();for(const row of r.counts)knowledgeText(knowledgeOutput,row.kind+" · "+row.state+" · "+row.n);knowledgeText(knowledgeOutput,"Устарело: "+r.stale+" · связи: "+r.links+" · ревизии: "+r.versions)});
 byId<HTMLFormElement>("knowledgeLinkForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(async()=>{const val=(id:string)=>byId<HTMLInputElement>(id).value;await knowledgeApi("link",{a:val("knowledgeA"),b:val("knowledgeB"),kind:val("knowledgeRelation")});await knowledgeSearch()})};
-type CognitiveAction="stats"|"column"|"compare"|"document"|"deduce"|"decisions"|"hypothesis"|"transfer"|"performance"|"draft";
+type CognitiveAction="stats"|"column"|"compare"|"document"|"deduce"|"decisions"|"hypothesis"|"transfer"|"performance"|"draft"|"seasonality"|"profile"|"research_docs"|"convert"|"anomalies";
 const cognitiveDialog=byId<HTMLDialogElement>("cognitiveDialog"),cognitiveSelect=byId<HTMLSelectElement>("cognitiveAction"),cognitiveInput=byId<HTMLTextAreaElement>("cognitiveInput"),cognitiveOutput=byId("cognitiveOutput");
 let cognitiveBusy=false;
 const cognitiveExamples:Record<CognitiveAction,object>={
  stats:{values:[10,12,15,14,18,21]},
+ seasonality:{values:[10,20,12,22,14,24],period:2},profile:{file:1},research_docs:{files:[1,2]},convert:{file:1,format:"json"},anomalies:{},
  column:{file:1,column:"cost"},
  compare:{a:1,b:2,key:"id"},
  document:{file:1},
@@ -881,6 +882,7 @@ const cognitiveExamples:Record<CognitiveAction,object>={
 };
 const cognitiveHelp:Record<CognitiveAction,string>={
  stats:"Введите массив чисел по порядку наблюдений. График отражает только введённые значения.",
+ seasonality:"Равномерный временной ряд; для сезонности минимум три заданных цикла.",profile:"Профиль первого листа CSV/XLSX: пропуски, уникальные и числовые значения.",research_docs:"ID 2–6 текстовых документов; общие слова и возможные расхождения полей.",convert:"Преобразование таблицы в CSV/JSON на локальном Диске.",anomalies:"Проверка существующих рабочих реестров без изменений.",
  column:"ID CSV/XLSX на локальном диске и точное название числового столбца.",
  compare:"ID двух таблиц и уникальный столбец-ключ. Сравнение значений без изменения файлов.",
  document:"ID текстового файла или DOCX. Извлечённые поля — кандидаты, а не доказанные факты.",
@@ -920,10 +922,10 @@ byId<HTMLFormElement>("cognitiveForm").onsubmit=async e=>{
  e.preventDefault();if(cognitiveBusy)return;const action=cognitiveSelect.value as CognitiveAction;
  try{
   const args=JSON.parse(cognitiveInput.value);if(!args||Array.isArray(args)||typeof args!=="object")throw Error("Введите объект параметров");
-  if(action==="draft"&&!confirm("Создать новый локальный DOCX-черновик?"))return;
+  if((action==="draft"||action==="convert")&&!confirm("Создать новый локальный файл на Диске?"))return;
   cognitiveBusy=true;cognitiveOutput.textContent="Выполняется…";
-  const result=await agentApi<Record<string,unknown>>("cognitive",{...args,action,...(action==="draft"?{confirm:true}:{})});
-  displayCognitive(result);if(action==="draft")await refreshWorkspaceMap(true)
+  const result=await agentApi<Record<string,unknown>>("cognitive",{...args,action,...((action==="draft"||action==="convert")?{confirm:true}:{})});
+  displayCognitive(result);if(action==="draft"||action==="convert")await refreshWorkspaceMap(true)
  }catch(e){cognitiveOutput.textContent=e instanceof Error?e.message:"Ошибка"}finally{cognitiveBusy=false}
 };
 byId("cognitiveCopy").onclick=()=>void copyText(cognitiveOutput.innerText);
