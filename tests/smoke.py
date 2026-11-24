@@ -26,6 +26,7 @@ def session(data_dir, expected=None):
                 assert b'id="routingConsent"' in page
                 assert b'id="toolReports"' in page and b'id="reportsDialog"' in page
                 assert b'id="toolWorkflow"' in page and b'id="editConsent"' in page
+                assert b'id="agentDialog"' in page and b'id="attachDialog"' in page
                 for icon in (b'id="workIcon"',b'id="docsIcon"',b'id="settingsIcon"',b'id="cloudIcon"',b'id="chatIcon"'):
                     assert icon in page
             with urlopen(url+"api/work",timeout=10) as response:

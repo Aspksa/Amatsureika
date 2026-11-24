@@ -2,6 +2,7 @@
 import json
 from tool_engine import ToolEngine, catalog, command, report_text
 from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
+from agent_engine import Agent, parse as agent_parse
 import ast
 from decimal import Decimal, localcontext, DecimalException
 import re
@@ -67,6 +68,7 @@ class Router:
         self.chat,self.workspace,self.cloud=chat,workspace,cloud
         self.tools=ToolEngine(workspace,chat)
         self.advanced=AdvancedTools(workspace,self.tools,extract)
+        self.agent=Agent(chat,workspace,self.tools,self.advanced)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
@@ -164,7 +166,7 @@ class Router:
             offsets={};total=0
             for p in pages: offsets[p["id"]]=total;total+=p["count"]
             for r in chatrows:
-                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite","Комплексный локальный отчёт","Локальная проверка аномалий","Сравнение извлечённого текста","Изменение сохранено локально","Изменение уже сохранено","Изменение не выполнено")): continue
+                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite","Комплексный локальный отчёт","Локальная проверка аномалий","Сравнение извлечённого текста","Изменение сохранено локально","Изменение уже сохранено","Изменение не выполнено","Локальный сценарий:")): continue
                 block=(offsets[r["cluster_id"]]+r["position"]-1)//500+1
                 candidates.append(("memory",block,"Сообщение #"+str(r["id"])+" ("+r["role"]+")",r["text"],r["created_at"],r["id"]))
         hits=[]
@@ -175,7 +177,7 @@ class Router:
             if not found: continue
             try: age=max(0,(datetime.now(timezone.utc)-datetime.fromisoformat(stamp)).days)
             except (ValueError,TypeError): age=9999
-            hits.append({"source":source,"id":i,"message_id":message,"title":title,"text":excerpt(body,terms),"updated":stamp,"age_days":age,"coverage":len(found)/len(terms),"matched":found})
+            hits.append({"trust":"register" if source=="work" else "document" if source=="file" else "historical_statement","source":source,"id":i,"message_id":message,"title":title,"text":excerpt(body,terms),"updated":stamp,"age_days":age,"coverage":len(found)/len(terms),"matched":found})
         hits.sort(key=lambda h:(h["coverage"],h["source"]=="work",-h["age_days"]),reverse=True)
         # Keep several different sources instead of repeating identical excerpts.
         distinct=[];seen=set()
@@ -195,8 +197,14 @@ class Router:
     def plan(self,value):
         value=validate(value)
         q=value["text"]
-        task=parse_command(q)
+        attachment_ids=list(dict.fromkeys(int(x) for x in re.findall(r"(?m)^\[Документ #(\d{1,12})\]$",q)))
+        if len(attachment_ids)>3:raise ValueError("До трёх вложений")
+        question=re.sub(r"(?m)^\[Документ #\d{1,12}\]$","",q).strip()
+        task=parse_command(q) if not attachment_ids else None
         advanced_answer=None;advanced_sources=[];mutation=None
+        with closing(self.chat.connect()) as db:
+            previous=db.execute("SELECT text FROM chat_messages WHERE role='user' AND request_id!=? ORDER BY id DESC LIMIT 1",(value["request_id"],)).fetchone()
+        agent_steps=agent_parse(q,previous[0] if previous else None) if not task and not attachment_ids else None
         receipt=self.workspace.edit_receipt(value["request_id"],q)
         if receipt:
             advanced_answer="Изменение уже сохранено: запись #"+str(receipt["id"])+" · "+receipt["label"]
@@ -215,9 +223,20 @@ class Router:
                 mutation=self.advanced.preview(*args)
                 advanced_answer="Изменение не выполнено: требуется подтверждение."
                 advanced_sources=[{"source":"work","id":mutation["id"],"title":mutation["label"]}]
-        tool=command(q) if advanced_answer is None else None
+        if agent_steps and advanced_answer is None:
+            run=self.agent.run(agent_steps)
+            advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
+            advanced_sources=[h for s in run["steps"] for h in s["sources"]]
+        tool=command(q) if advanced_answer is None and not attachment_ids else None
         report=self.tools.run(tool) if tool else None
-        hits=self.search(q) if report is None and advanced_answer is None else []
+        hits=self.search(question) if report is None and advanced_answer is None else []
+        attachment_hits=[]
+        for rid in attachment_ids:
+            path,title,size=self.workspace.download(rid)
+            body=extract(path,title)
+            if not body:body="Содержимое не извлечено; доступно только имя файла."
+            attachment_hits.append({"source":"file","id":rid,"message_id":None,"title":title,"text":body[:1600],"updated":datetime.now(timezone.utc).isoformat(),"age_days":0,"coverage":0,"matched":[]})
+        if attachment_hits:hits=attachment_hits+[h for h in hits if (h["source"],h["id"]) not in {("file",i) for i in attachment_ids}][:8-len(attachment_hits)]
         count_kinds={"сотрудников":"staff","автомобилей":"vehicles","машин":"vehicles","топливных карт":"cards","записей табеля":"timesheet","записей гсм":"fuel"}
         count_match=re.fullmatch(r"сколько\s+(сотрудников|автомобилей|машин|топливных карт|записей табеля|записей гсм|файлов|документов|сообщений)[?\s]*",q.casefold())
         count_answer=advanced_answer
@@ -243,7 +262,7 @@ class Router:
                 hits=[{"source":"work","id":r["id"],"message_id":None,"title":LABELS[r["kind"]],"text":"Активная запись учтена в подсчёте","updated":datetime.now(timezone.utc).isoformat(),"age_days":0,"coverage":1,"matched":[]} for r in summary["records"] if r["kind"]==count_kinds[what]][:8]
             elif what in ("файлов","документов"):
                 hits=[{"source":"file","id":r["id"],"message_id":None,"title":r["name"],"text":"Файл учтён в подсчёте","updated":datetime.now(timezone.utc).isoformat(),"age_days":0,"coverage":1,"matched":[]} for r in summary["files"][:8]]
-        lookup=bool(re.match(r"^\s*(найди|покажи|вспомни|поиск|что (?:я|мы) (?:писал|говорил))\b",q.casefold()))
+        lookup=not attachment_ids and bool(re.match(r"^\s*(найди|покажи|вспомни|поиск|что (?:я|мы) (?:писал|говорил))\b",q.casefold()))
         # Explicit retrieval, not arbitrary factual inference. Conflicts are
         # conservative possible discrepancies, not an AI verdict.
         conflicts=[]
@@ -258,6 +277,12 @@ class Router:
             part=f"[{h['source']} #{h['id']}; {h['title']}; дата {h['updated'][:10]}] {h['text']}"
             if len("\n".join(context_parts+[part]))>CONTEXT_LIMIT: break
             context_parts.append(part)
+        if not sufficient and not mutation:
+            with closing(self.chat.connect()) as db:
+                recent=db.execute("SELECT role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT 4",(value["request_id"],)).fetchall()[::-1]
+            for r in recent:
+                part="[Недавний диалог; "+r["role"]+"] "+r["text"][:400]
+                if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
         context="\n".join(context_parts)
         lines=[f"[{h['source']} #{h['id']}] {h['title']} ({h['updated'][:10]}): {h['text']}" for h in hits]
         local=("Найдено в локальной памяти (цитаты, не проверенные факты):\n"+"\n\n".join(lines)) if hits else "Недостаточно данных в локальной памяти. Запрос сохраню; для рассуждения можно явно разрешить Cloud.ru."

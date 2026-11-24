@@ -4,6 +4,7 @@ import sqlite3
 from urllib.parse import urlsplit, parse_qs, quote
 from workspace import Workspace, LIMIT
 from routing import Router, calculate
+from report_export import export_report
 from tool_engine import catalog
 import shutil
 from chat_store import ChatStore
@@ -95,7 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -118,9 +119,34 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "Expected JSON"}, 415)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute") else 4096):
+            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute","/api/agent/run","/api/agent/save") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
+            if path == "/api/agent/export":
+                data,filename,mime=export_report(self.router.tools,value)
+                self.send_response(200)
+                self.send_header("Content-Type",mime)
+                self.send_header("Content-Disposition",'attachment; filename="'+filename+'"')
+                self.send_header("Content-Length",str(len(data)))
+                self.send_header("Cache-Control","no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if path == "/api/agent/state":
+                if value!={}:raise ValueError("Некорректный запрос")
+                return self.send_json(self.router.agent.state())
+            if path == "/api/agent/run":
+                if not isinstance(value,dict) or set(value)!={"steps"}:raise ValueError("Некорректные шаги")
+                return self.send_json(self.router.agent.run(value["steps"]))
+            if path == "/api/agent/save":
+                return self.send_json(self.router.agent.save_scenario(value))
+            if path == "/api/agent/replay":
+                if not isinstance(value,dict) or set(value)!={"id"} or not isinstance(value["id"],str):raise ValueError("Некорректный сценарий")
+                return self.send_json(self.router.agent.run(self.router.agent.scenario(value["id"])))
+            if path == "/api/agent/queue":
+                return self.send_json(self.router.agent.enqueue(value))
+            if path == "/api/agent/mileage":
+                return self.send_json(self.router.agent.mileage(value))
             if path == "/api/routing/tools":
                 if value != {}: raise ValueError("Некорректный запрос")
                 return self.send_json({"tools":catalog()})
@@ -167,7 +193,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (sqlite3.Error, RuntimeError, OSError):
             self.send_json({"error": "Local memory unavailable"}, 503)
         except (ValueError, TypeError, OverflowError) as exc:
-            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute","/api/routing/search","/api/routing/calculate","/api/routing/tools","/api/routing/report") else "Invalid settings"}, 400)
+            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute","/api/routing/search","/api/routing/calculate","/api/routing/tools","/api/routing/report") or path.startswith("/api/agent/") else "Invalid settings"}, 400)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -183,6 +209,7 @@ if __name__ == "__main__":
     cloud=Cloud(path)
     workspace=Workspace(path)
     router=Router(chat,workspace,cloud)
+    router.agent.start()
     with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=store, chat=chat, cloud=cloud, workspace=workspace, router=router)) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
         print(url, flush=True)

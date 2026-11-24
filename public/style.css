@@ -245,3 +245,16 @@ body.full-map #panel{display:none!important}
 .edit-diff{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .edit-diff>div{padding:12px;border:1px solid #29434f;border-radius:8px;min-width:0}
 .edit-diff p{white-space:pre-wrap;overflow-wrap:anywhere;color:#c6e2df}
+
+#agentDialog,#attachDialog{width:min(760px,calc(100% - 28px))}
+#agentDialog pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#b2cbd3;max-height:40dvh;overflow:auto}
+#agentJobs{display:flex;gap:6px;flex-wrap:wrap}
+#attachList,#agentTools{width:100%;min-height:110px}
+#reportOutput tr[hidden]{display:none}
+
+.message-content h3,.message-content h4{color:#c4dedf;margin:10px 0 4px}
+#messages .message-content p{margin:0 0 6px}
+.message-content ul,.message-content ol{padding-left:20px;margin:5px 0}
+.message-content pre{white-space:pre-wrap;background:#122632;padding:10px;border-radius:7px;overflow:auto}
+.message-content code{font-family:Consolas,monospace;color:#bce9df}
+.chat-table-scroll{overflow:auto}.chat-table-scroll table{border-collapse:collapse;font-size:12px}.chat-table-scroll td,.chat-table-scroll th{border-bottom:1px solid #29434f;padding:5px;white-space:nowrap}
