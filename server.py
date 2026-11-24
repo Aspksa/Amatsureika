@@ -1,5 +1,6 @@
 import argparse
 import json
+import sqlite3
 from urllib.parse import urlsplit, parse_qs
 from chat_store import ChatStore
 from design_store import DesignStore
@@ -24,13 +25,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if urlsplit(self.path).path == "/api/chat":
+        if urlsplit(self.path).path in ("/api/chat", "/api/chat/health"):
             if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                 return self.send_json({"error":"Invalid host"},403)
             try:
+                if urlsplit(self.path).path == "/api/chat/health":
+                    return self.send_json(self.chat.health())
                 query = parse_qs(urlsplit(self.path).query)
                 cluster = int(query["cluster"][0]) if "cluster" in query else None
                 return self.send_json(self.chat.snapshot(cluster))
+            except sqlite3.Error:
+                return self.send_json({"error":"Memory unavailable"},503)
             except (ValueError, TypeError):
                 return self.send_json({"error":"Invalid cluster"},400)
         if urlsplit(self.path).path == "/api/camera":
@@ -55,6 +60,8 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
             self.send_json(self.chat.append(value) if path == "/api/chat" else self.store.save_camera(value) if path == "/api/camera" else self.store.save(value))
+        except (sqlite3.Error, RuntimeError):
+            self.send_json({"error": "Local memory unavailable"}, 503)
         except (ValueError, TypeError, OverflowError):
             self.send_json({"error": "Invalid settings"}, 400)
 

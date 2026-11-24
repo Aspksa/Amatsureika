@@ -53,3 +53,18 @@ for(const mode of ["radial","compact","hex"]){
  }
 }
 console.log("Chat cluster stable geometry passed");
+
+const {ClusterIndex,curvedPoint}=await import("../public/geometry.js");
+for(const total of [10000,50000,100000]){
+ const counts=Array(Math.ceil(total/200)).fill(200),g=conversationLayout(counts,"radial"),points=[];
+ const index=new ClusterIndex(g.centers);
+ assert.equal(index.query(-g.radius,-g.radius,g.radius,g.radius).length,counts.length);
+ assert(index.query(-600,-600,600,600).length<=counts.length);
+ const grown=conversationLayout([...counts,0],"radial");
+ for(let i=0;i<counts.length;i++){for(let j=0;j<200;j++)points.push({p:g.point(i,j,false),r:3.5});points.push({p:g.point(i,0,true),r:10});assert.deepEqual(g.point(i,199,false),grown.point(i,199,false));}
+ assert(points.every(x=>valid(x.p)));assert.equal(collisions(points),0);
+ console.log("Large map geometry",total,"passed");
+}
+assert.deepEqual(curvedPoint({x:0,y:0},{x:10,y:0},0),{x:0,y:0});
+assert.deepEqual(curvedPoint({x:0,y:0},{x:10,y:0},1),{x:10,y:0});
+assert(curvedPoint({x:0,y:0},{x:10,y:0},.5).y>0);

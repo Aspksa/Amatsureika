@@ -70,7 +70,7 @@ export function labelMask(boxes:readonly Box[],priority=-1):boolean[]{
 }
 export function collisions(points:readonly {p:Point;r:number}[]):number{
  const buckets=new Map<string,{p:Point;r:number}[]>();let count=0;
- const step=Math.max(1,...points.map(x=>x.r*2));
+ const step=points.reduce((m,x)=>Math.max(m,x.r*2),1);
  for(const item of points){const x=Math.floor(item.p.x/step),y=Math.floor(item.p.y/step);for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)for(const other of buckets.get((x+dx)+":"+(y+dy))||[])if(distance(item.p,other.p)+1e-6<item.r+other.r)count++;const key=x+":"+y;const bucket=buckets.get(key)||[];bucket.push(item);buckets.set(key,bucket)}
  return count;
 }
@@ -93,4 +93,25 @@ export function conversationLayout(raw:readonly number[],mode:Mode):Layout{
  }
  const orbits=mode==="hex"?[outer]:[outer,outer+22];
  return{mode,radius,outer,centers,radii,orbits,point,label:i=>centers[i]};
+}
+
+/** Cluster-level spatial index; no allocation per stored message. */
+export class ClusterIndex{
+ private buckets=new Map<string,number[]>();
+ private size=400;
+ constructor(private centers:readonly Point[],private padding=190){
+  centers.forEach((p,i)=>{const key=Math.floor(p.x/this.size)+":"+Math.floor(p.y/this.size);const list=this.buckets.get(key)||[];list.push(i);this.buckets.set(key,list)});
+ }
+ query(left:number,top:number,right:number,bottom:number):number[]{
+  const a=Math.floor((left-this.padding)/this.size),b=Math.floor((right+this.padding)/this.size),c=Math.floor((top-this.padding)/this.size),d=Math.floor((bottom+this.padding)/this.size);
+  const candidates:number[]=[];
+  if((b-a+1)*(d-c+1)>this.buckets.size*4){for(const list of this.buckets.values())candidates.push(...list)}
+  else for(let x=a;x<=b;x++)for(let y=c;y<=d;y++)candidates.push(...(this.buckets.get(x+":"+y)||[]));
+  return candidates.filter(i=>{const p=this.centers[i],r=this.padding;return p.x+r>=left&&p.x-r<=right&&p.y+r>=top&&p.y-r<=bottom}).sort((x,y)=>x-y);
+ }
+}
+export function curvedPoint(a:Point,b:Point,t:number,bend=.18):Point{
+ const p=clamp(t,0,1),v=1-p,dx=b.x-a.x,dy=b.y-a.y;
+ const c={x:(a.x+b.x)/2-dy*bend,y:(a.y+b.y)/2+dx*bend};
+ return{x:v*v*a.x+2*v*p*c.x+p*p*b.x,y:v*v*a.y+2*v*p*c.y+p*p*b.y};
 }
