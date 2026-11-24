@@ -1,3 +1,4 @@
+import {visibleRange} from "./chat_virtual.js";
 import {setupWorkspace} from "./workspace.js";
 import {runQuietFlow, particleAt, PARTICLES, type Leg} from "./flow.js";
 import {ClusterIndex, directedBlockLayout, workspaceSectors, dataOrbit, type WorkKind, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
@@ -19,7 +20,7 @@ const key=(i:number,n:number,outer:boolean)=>i+":"+n+":"+outer;
 const counts:number[]=[];
 type ChatCluster={id:number;previous_id:number|null;count:number};
 type ResultSource={source:"memory"|"work"|"file";id:number;title:string};
-type ResultMeta={links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
+type ResultMeta={search_passes?:number;evidence_status?:string;source_groups?:Record<string,number>;links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
 type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string;metadata?:ResultMeta};
 type Snapshot={clusters:ChatCluster[];messages:ChatMessage[];duplicate?:boolean};
 let clusters:ChatCluster[]=[];
@@ -354,13 +355,23 @@ function sourceAction(h:ResultSource){
  else if(h.source==="work"){const r=workspaceMap.records.find(x=>x.id===h.id);if(r)void workspaceUI.openRecord(r.kind,r.id);else chatStatus.textContent="Запись недоступна или архивирована"}
  else{const f=workspaceMap.files.find(x=>x.id===h.id);if(f){byId<HTMLAnchorElement>("fileDownload").href="/api/disk/download?id="+f.id;byId("fileDetailName").textContent=f.name;byId("fileDetailSize").textContent=(f.size/1024).toLocaleString("ru",{maximumFractionDigits:1})+" КБ";byId<HTMLDialogElement>("fileDetail").showModal()}else chatStatus.textContent="Файл недоступен"}
 }
+function evidenceGraph(meta:ResultMeta){
+ const root=document.createElement("div");root.className="evidence-graph";
+ const sources=Array.from(new Map((meta.sources??[]).map(s=>[s.source+" #"+s.id,s])).entries());
+ const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");svg.setAttribute("viewBox","0 0 320 170");svg.setAttribute("role","group");svg.setAttribute("aria-label","Граф общих терминов источников");
+ const points=new Map(sources.map(([k],i)=>[k,{x:160+125*Math.cos(2*Math.PI*i/Math.max(1,sources.length)-Math.PI/2),y:85+58*Math.sin(2*Math.PI*i/Math.max(1,sources.length)-Math.PI/2)}]));
+ for(const link of meta.links??[]){const a=points.get(link.from),b=points.get(link.to);if(!a||!b)continue;const line=document.createElementNS(ns,"line");line.setAttribute("x1",String(a.x));line.setAttribute("y1",String(a.y));line.setAttribute("x2",String(b.x));line.setAttribute("y2",String(b.y));line.setAttribute("class","evidence-edge");const title=document.createElementNS(ns,"title");title.textContent=link.terms.join(", ");line.append(title);svg.append(line)}
+ for(const [k,s] of sources){const p=points.get(k)!;const g=document.createElementNS(ns,"g");g.setAttribute("transform","translate("+p.x+" "+p.y+")");g.setAttribute("role","button");g.setAttribute("tabindex","0");g.setAttribute("aria-label",s.title+" #"+s.id);const dot=document.createElementNS(ns,"circle");dot.setAttribute("r","8");dot.setAttribute("class","evidence-node "+s.source);const label=document.createElementNS(ns,"text");label.setAttribute("y","19");label.setAttribute("text-anchor","middle");label.textContent=(s.source==="memory"?"П":s.source==="work"?"Р":"Д")+"#"+s.id;g.append(dot,label);g.addEventListener("click",()=>sourceAction(s));g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();sourceAction(s)}});svg.append(g)}
+ root.append(svg);return root
+}
 function resultCard(meta:ResultMeta,messageId:number){
  const root=document.createElement("details");root.className="chat-result";const summary=document.createElement("summary");summary.textContent="Источники и инструменты"+(meta.tools?.length?" · "+meta.tools.join(", "):"");root.append(summary);
+ if(meta.evidence_status){const p=document.createElement("p");p.textContent=({local_result:"Локальный результат",retrieval_only:"Найдены выдержки, требуется проверка",insufficient:"Недостаточно данных",external_excerpts:"Интернет-выдержки, не проверенные факты"} as Record<string,string>)[meta.evidence_status]??meta.evidence_status;p.textContent+=" · проходов поиска: "+(meta.search_passes??0);root.append(p)}
  if(meta.steps?.length){const p=document.createElement("p");p.textContent=meta.steps.map(s=>s.tool+" · "+s.status).join(" / ");root.append(p)}
  for(const h of meta.sources??[]){const b=document.createElement("button");b.type="button";b.textContent=h.title+" · #"+h.id;b.onclick=()=>sourceAction(h);root.append(b)}
- for(const h of meta.web_sources??[]){const div=document.createElement("div"),a=document.createElement("a");try{if(new URL(h.url).protocol!=="https:")continue}catch{continue}a.href=h.url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=h.title;div.append(a);const p=document.createElement("p");p.textContent=(h.date||"Дата не указана")+" · непроверенная выдержка: "+h.excerpt;div.append(p);root.append(div)}
+ for(const h of meta.web_sources??[]){const div=document.createElement("div"),a=document.createElement("a");div.className="web-evidence";try{if(new URL(h.url).protocol!=="https:")continue}catch{continue}a.href=h.url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=h.title;div.append(a);const p=document.createElement("p");p.textContent=(h.date||"Дата не указана")+" · непроверенная выдержка: "+h.excerpt;div.append(p);root.append(div)}
  if(meta.warnings?.length){const p=document.createElement("p");p.textContent=meta.warnings.join(" ");p.className="result-warning";root.append(p)}
- if(meta.links?.length){const p=document.createElement("p");p.textContent="Связи по общим словам (не причинность): "+meta.links.map(l=>l.from+" ↔ "+l.to+" · "+l.terms.join(", ")).join("; ");root.append(p)}
+ if(meta.links?.length){const p=document.createElement("p");p.textContent="Связи по общим словам (не причинность): "+meta.links.map(l=>l.from+" ↔ "+l.to+" · "+l.terms.join(", ")).join("; ");root.append(p);root.append(evidenceGraph(meta))}
  if(meta.table){const t=meta.table,wrap=document.createElement("div"),table=document.createElement("table"),head=document.createElement("tr"),body=document.createElement("tbody");wrap.className="chat-table-scroll";for(let i=0;i<t.columns.length;i++){const th=document.createElement("th"),b=document.createElement("button");b.type="button";b.textContent=t.columns[i];let asc=true;b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((x,y)=>(x.cells[i].textContent??"").localeCompare(y.cells[i].textContent??"","ru",{numeric:true})*(asc?1:-1));asc=!asc;body.append(...rows)};th.append(b);head.append(th)}table.append(head);for(const row of t.rows){const tr=document.createElement("tr");for(const v of row){const td=document.createElement("td");td.textContent=v;tr.append(td)}body.append(tr)}table.append(body);wrap.append(table);root.append(wrap);const p=document.createElement("p");p.textContent="Показано "+t.rows.length+" из "+t.total_rows;root.append(p);for(const format of ["xlsx","docx"]){const b=document.createElement("button");b.type="button";b.textContent="Сохранить "+format.toUpperCase();b.onclick=async()=>{if(busy||!confirm("Сохранить именно эту таблицу на Диск?"))return;b.disabled=true;try{const out=await routingPost<{name:string}>("export-result",{message:messageId,format,confirm:true});chatStatus.textContent="Сохранено: "+out.name;await refreshWorkspaceMap(true)}catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка"}finally{b.disabled=false}};root.append(b)}}
  if(meta.series?.length){const chart=document.createElement("div");chart.className="chat-series";root.append(chart);drawSeries(meta.series,chart);root.open=true}
  return root;
@@ -368,7 +379,7 @@ function resultCard(meta:ResultMeta,messageId:number){
 function renderMessage(m:ChatMessage){
 
  const article=document.createElement("article");article.className="chat-message "+(m.role==="user"?"user-message":"reply");article.dataset.message=String(m.id);article.dataset.role=m.role;
- article.dataset.raw=m.text;const content=document.createElement("div");content.className="message-content";if(m.role==="assistant")renderMarkdown(content,m.text);else{const p=document.createElement("p");p.textContent=m.text;content.append(p)}if(m.role==="assistant"&&m.text.length>2200){const folded=document.createElement("details");folded.className="long-answer";const summary=document.createElement("summary");summary.textContent="Развернуть полный ответ · "+m.text.length.toLocaleString("ru")+" символов";const preview=document.createElement("p");preview.className="answer-preview";preview.textContent=m.text.slice(0,420)+"…";folded.append(summary,content);folded.ontoggle=()=>{preview.hidden=folded.open};article.append(preview,folded)}else article.append(content);
+ article.dataset.raw=m.text;const content=document.createElement("div");content.className="message-content";if(m.role==="assistant")renderMarkdown(content,m.text);else{const p=document.createElement("p");p.textContent=m.text.replace(/^\[Документ #\d+\]$/gm,"").trim();content.append(p);for(const match of m.text.matchAll(/^\[Документ #(\d+)\]$/gm)){const id=Number(match[1]),file=workspaceMap.files.find(f=>f.id===id),button=document.createElement("button");button.className="attachment-chip";button.type="button";button.textContent=file?.name??"Документ #"+id;button.onclick=()=>sourceAction({source:"file",id,title:button.textContent??""});content.append(button)}}if(m.role==="assistant"&&m.text.length>2200){const folded=document.createElement("details");folded.className="long-answer";const summary=document.createElement("summary");summary.textContent="Развернуть полный ответ · "+m.text.length.toLocaleString("ru")+" символов";const preview=document.createElement("p");preview.className="answer-preview";preview.textContent=m.text.slice(0,420)+"…";folded.append(summary,content);folded.ontoggle=()=>{preview.hidden=folded.open};article.append(preview,folded)}else article.append(content);
  if(m.role==="assistant"&&m.metadata&&(m.metadata.tools?.length||m.metadata.sources?.length||m.metadata.web_sources?.length||m.metadata.warnings?.length))article.append(resultCard(m.metadata,m.id));
  const actions=document.createElement("div");actions.className="message-actions";
  const copy=document.createElement("button");copy.type="button";copy.textContent="Копировать";copy.onclick=()=>void copyText(m.text);actions.append(copy);
@@ -380,21 +391,37 @@ function renderMessage(m:ChatMessage){
  const locate=document.createElement("button");locate.type="button";locate.textContent="На карте";locate.onclick=()=>{if(busy)return;const i=clusters.findIndex(c=>c.id===m.cluster_id);if(i>=0)focusCluster(i)};actions.append(locate);
  article.append(actions);return article;
 }
-const chatRecords=new Map<number,ChatMessage>();let chatWindowStart=0;
-const CHAT_WINDOW=60,CHAT_PAGE=30;
-function redrawChat(scrollBottom=true){
- const all=Array.from(chatRecords.values()).sort((a,b)=>a.id-b.id);
- chatWindowStart=Math.max(0,Math.min(chatWindowStart,Math.max(0,all.length-CHAT_WINDOW)));
- const old=messages.scrollHeight-messages.scrollTop;
- messages.replaceChildren();
- if(chatWindowStart>0){const older=document.createElement("button");older.className="history-page";older.textContent="↑ Предыдущие "+Math.min(CHAT_PAGE,chatWindowStart)+" сообщений";older.onclick=()=>{if(busy)return;chatWindowStart=Math.max(0,chatWindowStart-CHAT_PAGE);redrawChat(false);messages.scrollTop=0};messages.append(older)}
- for(const m of all.slice(chatWindowStart,chatWindowStart+CHAT_WINDOW))messages.append(renderMessage(m));
- if(chatWindowStart+CHAT_WINDOW<all.length){const newer=document.createElement("button");newer.className="history-page";newer.textContent="↓ Следующие сообщения";newer.onclick=()=>{if(busy)return;chatWindowStart=Math.min(Math.max(0,all.length-CHAT_WINDOW),chatWindowStart+CHAT_PAGE);redrawChat(false);messages.scrollTop=0};messages.append(newer)}
- if(scrollBottom)messages.scrollTop=messages.scrollHeight;else messages.scrollTop=Math.max(0,messages.scrollHeight-old);
+const chatRecords=new Map<number,ChatMessage>(),rowHeights=new Map<number,number>(),mountedRows=new Map<number,HTMLElement>();
+let virtualFrame=0,virtualBottom=false,virtualSignature="",virtualWidth=0;
+function estimate(m:ChatMessage){return m.role==="assistant"&&m.text.length>2200?230:Math.min(1000,85+Math.ceil(m.text.length/55)*23)}
+function scheduleVirtual(bottom=false){virtualBottom=virtualBottom||bottom;if(!virtualFrame)virtualFrame=requestAnimationFrame(()=>{virtualFrame=0;const b=virtualBottom;virtualBottom=false;redrawChat(b)})}
+const rowObserver=new ResizeObserver(entries=>{
+ let delta=0,changed=false;const all=Array.from(chatRecords.values()).sort((a,b)=>a.id-b.id),first=messages.scrollTop;
+ let top=0;const before=new Set<number>();for(const m of all){const h=rowHeights.get(m.id)??estimate(m);if(top+h<=first)before.add(m.id);top+=h}
+ for(const e of entries){const node=e.target as HTMLElement,id=Number(node.dataset.row),m=chatRecords.get(id);if(!m||mountedRows.get(id)!==node)continue;const old=rowHeights.get(id)??estimate(m),h=Math.max(1,Math.ceil(node.getBoundingClientRect().height));if(h!==old){rowHeights.set(id,h);changed=true;if(before.has(id))delta+=h-old}}
+ if(changed){const atBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<45;virtualSignature="";if(delta&&!atBottom)messages.scrollTop+=delta;scheduleVirtual(atBottom)}
+});
+function redrawChat(scrollBottom=false){
+ const all=Array.from(chatRecords.values()).sort((a,b)=>a.id-b.id),width=messages.clientWidth;
+ if(width&&Math.abs(width-virtualWidth)>25){rowHeights.clear();virtualWidth=width;virtualSignature=""}
+ const heights=all.map(m=>rowHeights.get(m.id)??estimate(m)),total=heights.reduce((a,b)=>a+b,0),viewport=Math.max(100,messages.clientHeight);
+ const offset=scrollBottom?Math.max(0,total-viewport):messages.scrollTop;
+ const range=visibleRange(heights,offset,viewport);
+ const ids=all.slice(range.start,range.end).map(m=>m.id),signature=ids.join(",")+":"+range.top+":"+range.bottom;
+ if(signature!==virtualSignature){
+  virtualSignature=signature;
+  const keep=new Set(ids);for(const [id,node] of mountedRows)if(!keep.has(id)){rowObserver.unobserve(node);mountedRows.delete(id)}
+  const top=document.createElement("div"),bottom=document.createElement("div");top.className=bottom.className="virtual-space";top.style.height=range.top+"px";bottom.style.height=range.bottom+"px";top.setAttribute("aria-hidden","true");bottom.setAttribute("aria-hidden","true");
+  const nodes:HTMLElement[]=[top];for(const m of all.slice(range.start,range.end)){let node=mountedRows.get(m.id);if(!node){node=document.createElement("div");node.className="virtual-message-row";node.dataset.row=String(m.id);node.append(renderMessage(m));mountedRows.set(m.id,node);rowObserver.observe(node)}nodes.push(node)}nodes.push(bottom);
+  if(streamingPreview)nodes.push(streamingPreview);messages.replaceChildren(...nodes);
+ }
+ if(scrollBottom)messages.scrollTop=messages.scrollHeight;
 }
-function resetChat(records:ChatMessage[]){chatRecords.clear();for(const m of records)chatRecords.set(m.id,m);chatWindowStart=Math.max(0,chatRecords.size-CHAT_WINDOW);redrawChat()}
-function appendMessage(m:ChatMessage){if(chatRecords.has(m.id))return;chatRecords.set(m.id,m);while(chatRecords.size>500){const first=chatRecords.keys().next().value;if(first===undefined)break;chatRecords.delete(first)}chatWindowStart=Math.max(0,chatRecords.size-CHAT_WINDOW);redrawChat()}
-function latestChat(){chatWindowStart=Math.max(0,chatRecords.size-CHAT_WINDOW);redrawChat()}
+function resetChat(records:ChatMessage[]){rowObserver.disconnect();mountedRows.clear();rowHeights.clear();chatRecords.clear();virtualSignature="";for(const m of records)chatRecords.set(m.id,m);redrawChat(true)}
+function appendMessage(m:ChatMessage){if(chatRecords.has(m.id))return;chatRecords.set(m.id,m);while(chatRecords.size>500){const first=chatRecords.keys().next().value;if(first===undefined)break;chatRecords.delete(first);rowHeights.delete(first)}redrawChat(true)}
+function latestChat(){redrawChat(true)}
+messages.addEventListener("scroll",()=>scheduleVirtual(),{passive:true});
+new ResizeObserver(()=>scheduleVirtual()).observe(messages);
 async function snapshot(cluster?:number):Promise<Snapshot>{const r=await fetch("/api/memory"+(cluster===undefined?"":"?cluster="+cluster),{cache:"no-store"});if(!r.ok)throw Error("history");return r.json()}
 async function openHistory(i:number){
  const revision=++historyRevision;chat.hidden=false;syncChatIcons();
@@ -431,7 +458,7 @@ function clearFlow(){
  for(const [target,timer] of arrivalTimers){window.clearTimeout(timer);target.classList.remove("arrived-request","arrived-reply","arrived-memory","arrived-error")}
  arrivalTimers.clear();pendingClusters.clear();renderKey="";
 }
-function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"|"work"|"docs"):Promise<void>{
+function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"|"work"|"docs"|"web"):Promise<void>{
  if(motionOff()||document.hidden||flowLegs.size>=Math.max(3,Math.floor(12*quality)))return Promise.resolve();
  return new Promise(resolve=>{
   const layer=byId("traffic"),cls="quiet-"+kind;
@@ -510,6 +537,7 @@ async function retrieveAnimation(hits:SearchHit[]){
   if(locate()<0)return;
   const target=()=>{const i=locate();return i<0?corePoint():screenPoint(h.source==="memory"?memoryPoint(i):h.source==="work"?workPoint(i):filePoint(i))};
   const kind=h.source==="memory"?"memory":h.source==="work"?"work":"docs";
+  const i0=locate();const node0=h.source==="memory"?visibleItems.get(key(i0,0,false))?.e:h.source==="work"?workNodes.get(h.id):fileNodes.get(h.id);arrival(node0,"memory");
   await playLeg(corePoint,target,kind);
   const i=locate();if(i<0)return;
   const node=h.source==="memory"?visibleItems.get(key(i,0,false))?.e:h.source==="work"?workNodes.get(h.id):fileNodes.get(h.id);
@@ -517,7 +545,13 @@ async function retrieveAnimation(hits:SearchHit[]){
   await playLeg(target,corePoint,kind);arrival(group("core"),"reply");
  }));
 }
-function chatPhase(phase:string){group("chatIcon").dataset.phase=phase;chat.dataset.phase=phase;if(phase==="search")arrival(group("chatIcon"),"request")}
+function sourceEndpoint(ref:string):Endpoint|undefined{
+ const m=ref.match(/^(memory|work|file) #(\d+)$/);if(!m)return;const id=Number(m[2]);
+ if(m[1]==="memory"&&!clusters.some(c=>c.id===id)||m[1]==="work"&&!workspaceMap.records.some(r=>r.id===id)||m[1]==="file"&&!workspaceMap.files.some(f=>f.id===id))return;
+ return ()=>{const i=m[1]==="memory"?clusters.findIndex(c=>c.id===id):m[1]==="work"?workspaceMap.records.findIndex(r=>r.id===id):workspaceMap.files.findIndex(f=>f.id===id);return i<0?corePoint():screenPoint(m[1]==="memory"?memoryPoint(i):m[1]==="work"?workPoint(i):filePoint(i))}
+}
+async function animateEvidence(meta?:ResultMeta){if(!meta)return;await Promise.all((meta.links??[]).slice(0,4).map(async l=>{const a=sourceEndpoint(l.from),b=sourceEndpoint(l.to);if(a&&b)await playLeg(a,b,"memory")}))}
+function chatPhase(phase:string){document.body.dataset.chatPhase=phase;group("chatIcon").dataset.phase=phase;chat.dataset.phase=phase;if(phase==="search")arrival(group("chatIcon"),"request")}
 type PreviewStep={id:string;tool:string;month:string;depends:string[]};
 async function previewChatPlan(request:{text:string;request_id:string}){
  const preview=await routingPost<{steps:PreviewStep[];note:string}>("preview",request);
@@ -537,7 +571,7 @@ async function runChatPlan(request:{text:string;request_id:string},steps:Preview
  for(const line of lines){if(!line.trim())continue;const event=JSON.parse(line);
  if(event.type==="error")throw Error(event.error);
  if(event.type==="done")result=event.result as RoutePlan;
- if(event.type==="progress"){const p=event.step;statuses.set(p.id,p.tool+" · "+p.status);byId("chatProgress").textContent=[...statuses.values()].join(" | ");chatPhase("tool");if(p.status!=="scheduled"){arrival(group("core"),p.status==="ok"?"reply":"error")}}
+ if(event.type==="progress"){const p=event.step;statuses.set(p.id,p.tool+" · "+p.status);byId("chatProgress").textContent=[...statuses.values()].join(" | ");chatPhase("tool");const id=p.tool==="files"?"docsIcon":p.tool==="health"||p.tool==="summary"?null:"workIcon";if(id){if(p.status==="scheduled"){arrival(group(id),"request");void playLeg(corePoint,()=>modulePoint(id),id==="docsIcon"?"docs":"work")}else{arrival(group(id),p.status==="ok"?"reply":"error");void playLeg(()=>modulePoint(id),corePoint,id==="docsIcon"?"docs":"work")}}else arrival(group("core"),p.status==="scheduled"?"request":p.status==="ok"?"reply":"error")}
  }if(chunk.done)break}if(!result)throw Error("План прерван");return result}finally{await reader.cancel().catch(()=>{})}
 }
 function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
@@ -571,11 +605,11 @@ form.onsubmit=async e=>{
     const steps=await previewChatPlan(request);checkPreparation();plan=await runChatPlan(request,steps);
     await refreshWorkspaceMap();
     chatStatus.textContent="Найдено источников: "+plan.hits.length+(plan.fts?" · FTS5":" · ограниченный поиск");
-    checkPreparation();await retrieveAnimation(plan.hits);checkPreparation();
+    checkPreparation();await retrieveAnimation(plan.hits);checkPreparation();await animateEvidence(plan.metadata);checkPreparation();
     if(plan.web_offer&&!localOnly&&confirm("Разрешить интернет-поиск? Внешнему поисковику будет отправлено только:\n"+plan.web_offer.query+"\nРежим: "+plan.web_offer.action)){
      checkPreparation();chatPhase("web");chatStatus.textContent="Интернет: получение источников…";
      const icon=group("webIcon");icon.classList.add("module-working");
-     try{await playLeg(corePoint,()=>modulePoint("webIcon"),"request");checkPreparation();plan=await routingPost<RoutePlan>("web",{token:plan.token,...plan.web_offer,confirm:true});await playLeg(()=>modulePoint("webIcon"),corePoint,"reply");arrival(group("core"),"reply")}
+     try{await playLeg(corePoint,()=>modulePoint("webIcon"),"web");checkPreparation();plan=await routingPost<RoutePlan>("web",{token:plan.token,...plan.web_offer,confirm:true});await playLeg(()=>modulePoint("webIcon"),corePoint,"web");arrival(group("core"),"reply")}
      catch(e){chatStatus.textContent="Интернет недоступен: "+(e instanceof Error?e.message:"ошибка");if(cancelPreparation)throw e}
      finally{icon.classList.remove("module-working")}
     }
@@ -746,20 +780,23 @@ byId<HTMLFormElement>("chatSearchForm").onsubmit=async e=>{
 };
 type AgentStep={id:string;tool:string;month:string;depends:string[]};
 type AgentRegistry={id:string;title:string;permission:string;month:boolean};
-type AgentResult={steps:{id:string;tool:string;text:string;status:string}[];ok:boolean;snapshot:string};
-type AgentState={registry:AgentRegistry[];scenarios:{id:string;name:string;created:string}[];jobs:{id:string;status:string;due:string;result:AgentResult|null}[];runs:{tool:string;status:string;duration_ms:number;detail:string;created:string}[]};
+type AgentResult={draft?:string;steps:{id:string;tool:string;text:string;status:string}[];ok:boolean;snapshot:string};
+type AutomationRule={id:string;scenario:string;mode:string;interval_seconds:number;file_id:number|null;enabled:number;status:string;next_check:number;last_job:string};
+type AgentState={rules?:AutomationRule[];registry:AgentRegistry[];scenarios:{id:string;name:string;created:string}[];jobs:{id:string;status:string;due:string;result:AgentResult|null}[];runs:{tool:string;status:string;duration_ms:number;detail:string;created:string}[]};
 const agentDialog=byId<HTMLDialogElement>("agentDialog"),agentOutput=byId("agentOutput"),agentTools=byId<HTMLSelectElement>("agentTools"),agentMonth=byId<HTMLInputElement>("agentMonth"),agentScenarios=byId<HTMLSelectElement>("agentScenarios");
 let agentState:AgentState|null=null,agentBusy=false,agentSteps:AgentStep[]=[];
 async function agentApi<T>(path:string,value:object):Promise<T>{const r=await fetch("/api/agent/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка инструмента");return data as T}
-function showAgentResult(r:AgentResult){agentOutput.textContent=r.steps.map(s=>s.tool+" · "+s.status+"\n"+s.text).join("\n\n")+"\n"+r.snapshot}
+function showAgentResult(r:AgentResult){agentOutput.textContent=r.steps.map(s=>s.tool+" · "+s.status+"\n"+s.text).join("\n\n")+"\n"+r.snapshot+(r.draft?"\n\n"+r.draft:"")}
 async function refreshAgent(){
  const state=await agentApi<AgentState>("state",{});agentState=state;
  const selectedTools=new Set(Array.from(agentTools.selectedOptions).map(o=>o.value)),selectedScenario=agentScenarios.value;agentTools.replaceChildren();agentScenarios.replaceChildren();
  for(const t of state.registry.filter(t=>t.permission==="read_local"&&t.id!=="summary")){const o=document.createElement("option");o.value=t.id;o.textContent=t.title;o.selected=selectedTools.has(t.id);agentTools.append(o)}
  for(const s of state.scenarios){const o=document.createElement("option");o.value=s.id;o.textContent=s.name;agentScenarios.append(o)}
  if(state.scenarios.some(s=>s.id===selectedScenario))agentScenarios.value=selectedScenario;
+ const rules=byId("agentRulesList");rules.replaceChildren();
+ for(const rule of state.rules??[]){const row=document.createElement("div"),p=document.createElement("p");p.textContent=(state.scenarios.find(s=>s.id===rule.scenario)?.name??rule.scenario)+" · "+rule.mode+" · "+rule.status+" · "+(rule.enabled?new Date(rule.next_check*1000).toLocaleString("ru"):"выключено");row.append(p);if(rule.enabled){const b=document.createElement("button");b.type="button";b.textContent="Отключить";b.onclick=()=>void agentAction(async()=>{await agentApi("rules",{action:"disable",id:rule.id,confirm:true});await refreshAgent()});row.append(b)}rules.append(row)}
  const jobs=byId("agentJobs");jobs.replaceChildren();
- for(const j of state.jobs){const item=document.createElement("button");item.type="button";item.textContent=j.status+" · "+new Date(j.due).toLocaleString("ru");item.onclick=()=>{if(j.result?.steps)showAgentResult(j.result);else agentOutput.textContent=j.status};jobs.append(item)}
+ for(const j of state.jobs){const item=document.createElement("button");item.type="button";item.textContent=j.status+" · "+new Date(j.due).toLocaleString("ru");item.onclick=()=>{if(j.result?.steps)showAgentResult(j.result);else agentOutput.textContent=j.status};jobs.append(item);if(j.status==="queued"){const cancel=document.createElement("button");cancel.type="button";cancel.textContent="Отменить";cancel.onclick=()=>void agentAction(async()=>{await agentApi("rules",{action:"cancel",id:j.id,confirm:true});await refreshAgent()});jobs.append(cancel)}}
  byId("agentRuns").textContent=state.runs.map(r=>r.tool+" · "+r.status+" · "+r.duration_ms+" мс · "+r.created.slice(0,19)).join("\n")||"Нет запусков";
  byId("agentPermissions").textContent=state.registry.map(r=>r.title+" — "+(r.permission==="read_local"?"чтение локально":"отдельное подтверждение")).join("\n");
 }
@@ -772,10 +809,11 @@ async function agentAction(action:()=>Promise<void>){if(agentBusy)return;agentBu
 byId("toolAgent").onclick=()=>{closeTools();if(busy)return;const d=new Date();agentMonth.value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");agentDialog.showModal();void agentAction(refreshAgent)};
 byId("agentClose").onclick=()=>agentDialog.close();
 byId("agentRefresh").onclick=()=>void agentAction(refreshAgent);
-byId("agentRun").onclick=()=>void agentAction(async()=>{agentSteps=[];const steps=makeAgentSteps();agentOutput.textContent="Выполнение…";const r=await agentApi<AgentResult>("run",{steps});showAgentResult(r);if(r.ok)agentSteps=steps;await refreshAgent()});
+byId("agentRun").onclick=()=>void agentAction(async()=>{agentSteps=[];const steps=makeAgentSteps();if(!confirm("Выполнить цепочку:\n"+steps.map(s=>s.tool+(s.depends.length?" ← "+s.depends.join(", "):"")).join("\n")))return;agentOutput.textContent="Выполнение…";const r=await agentApi<AgentResult>("run",{steps});showAgentResult(r);if(r.ok)agentSteps=steps;await refreshAgent()});
 byId("agentSave").onclick=()=>void agentAction(async()=>{const name=byId<HTMLInputElement>("agentName").value.trim();if(!name)throw Error("Введите название");if(!agentSteps.length)throw Error("Сначала успешно выполните сценарий");await agentApi("save",{name,steps:agentSteps});await refreshAgent();agentOutput.textContent="Сценарий сохранён"});
 byId("agentReplay").onclick=()=>void agentAction(async()=>{if(!agentScenarios.value)throw Error("Выберите сценарий");showAgentResult(await agentApi<AgentResult>("replay",{id:agentScenarios.value}));await refreshAgent()});
 byId("agentQueue").onclick=()=>void agentAction(async()=>{const value=byId<HTMLInputElement>("agentDue").value;if(!value||!agentScenarios.value)throw Error("Выберите сценарий и время");const due=new Date(value);if(!Number.isFinite(due.getTime()))throw Error("Некорректное время");await agentApi("queue",{scenario:agentScenarios.value,due:due.toISOString()});await refreshAgent();agentOutput.textContent="Задача добавлена в локальную очередь"});
+byId("agentRuleAdd").onclick=()=>void agentAction(async()=>{if(!agentScenarios.value)throw Error("Выберите сохранённый сценарий");const mode=byId<HTMLSelectElement>("agentRuleMode").value,minutes=Number(byId<HTMLInputElement>("agentRuleMinutes").value),file=mode==="file"?Number(byId<HTMLInputElement>("agentRuleFile").value):null;if(!confirm("Разрешить повторяющийся локальный сценарий? Только чтение, без Cloud.ru. Для остановки отключите правило."))return;await agentApi("rules",{action:"add",scenario:agentScenarios.value,mode,minutes,file,current_month:byId<HTMLInputElement>("agentRuleMonth").checked,draft:byId<HTMLInputElement>("agentRuleDraft").checked,confirm:true});await refreshAgent();agentOutput.textContent="Правило сохранено в SQLite"});
 byId("agentMileageSave").onclick=()=>void agentAction(async()=>{const v=Number(byId<HTMLInputElement>("agentVehicle").value),km=Number(byId<HTMLInputElement>("agentKm").value);if(!confirm("Сохранить месячный пробег автомобиля #"+v+"?"))return;await agentApi("mileage",{vehicle:v,month:agentMonth.value,km});agentOutput.textContent="Пробег сохранён"});
 type WebPage={url:string;title:string;text:string;published:string;modified:string;fetched:string;cached?:boolean};
 type WebItem={url:string;title:string;published:string;publisher:string};
