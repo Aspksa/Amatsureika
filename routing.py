@@ -323,6 +323,7 @@ class Router:
             run=self.agent.run(agent_steps,progress=progress)
             if not run['ok']:meta['warnings'].append('Не все шаги выполнены; результат неполный.')
             meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{"tool":s["tool"],"status":s["status"]} for s in run["steps"]]
+            if run["ok"]:meta["verified_steps"]=agent_steps
             advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
             advanced_sources=[h for s in run["steps"] for h in s["sources"]]
         tool=command(q) if advanced_answer is None and not attachment_ids else None
@@ -372,11 +373,11 @@ class Router:
         lookup=not attachment_ids and bool(re.match(r"^\s*(найди|покажи|вспомни|поиск|что (?:я|мы) (?:писал|говорил))\b",q.casefold()))
         # Explicit retrieval, not arbitrary factual inference. Conflicts are
         # conservative possible discrepancies, not an AI verdict.
-        conflicts=[]
+        conflicts=[];conflict_pairs=[]
         for i,a in enumerate(hits):
             for b in hits[i+1:]:
                 if a["source"]==b["source"]=="work" and a["title"]==b["title"] and a["coverage"]==b["coverage"]==1 and a["text"]!=b["text"]:
-                    conflicts.append("Несколько разных рабочих записей: "+a["title"]);break
+                    conflicts.append("Несколько разных рабочих записей: "+a["title"]);conflict_pairs.append([f"work #{a['id']}",f"work #{b['id']}"]);break
         conflicts=list(dict.fromkeys(conflicts))[:3]
         sufficient=count_answer is not None or (lookup and bool(hits) and hits[0]["coverage"]>=.75 and not conflicts)
         links=evidence_links(hits) if count_answer is None else []
@@ -410,7 +411,7 @@ class Router:
             if links:local+="\nПересечения источников (общие слова, не причинность): "+"; ".join(x["from"]+" ↔ "+x["to"]+": "+", ".join(x["terms"]) for x in links[:4])
         if meta.get("document_summary") and count_answer is None:local=meta["document_summary"]+"\n\n"+local
         meta["sources"]=[{"source":h["source"],"id":h["id"],"title":h["title"]} for h in hits[:8]]
-        meta["links"]=links[:8];meta["missing"]=missing;meta["conflicts"]=conflicts
+        meta["links"]=links[:8];meta["missing"]=missing;meta["conflicts"]=conflicts;meta["conflict_pairs"]=conflict_pairs[:3] if conflicts else []
         meta["evidence_status"]="local_result" if count_answer is not None else "retrieval_only" if hits else "insufficient"
         meta["source_groups"]={kind:sum(h["source"]==kind for h in hits) for kind in ("memory","work","file")}
         if missing:meta["warnings"].append("Неподтверждённые термины: "+", ".join(missing))
@@ -446,6 +447,9 @@ class Router:
             conflicts=possible_conflicts(plan["hits"],sources)
             plan["conflicts"]=(plan["conflicts"]+conflicts)[:6]
             meta["conflicts"]=plan["conflicts"];meta["warnings"].extend(conflicts)
+            for note in conflicts:
+                match=re.search(r"(work|file) #(\d+)",note)
+                if match:meta.setdefault("conflict_pairs",[]).append([match[0],"web"])
             parts=["[Интернет-источник; непроверенная выдержка; "+p["url"]+"; дата "+(p["date"] or "не указана")+"] "+p["title"]+" "+p["excerpt"] for p in sources]
             plan["context"]=bounded_context([plan["context"][:2300]]+parts,CONTEXT_LIMIT)
             # No hallucinated synthesis offline. Preserve local results and show excerpts.

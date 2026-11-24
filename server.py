@@ -245,7 +245,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent / "public"
-    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js", "workspace.js")):
+    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js", "workspace.js", "chat_virtual.js")):
         raise SystemExit("Build the frontend first: npm run build")
     path=args.data_dir / "amatsureika.db"
     store=DesignStore(path)

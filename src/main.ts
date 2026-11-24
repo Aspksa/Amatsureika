@@ -20,7 +20,7 @@ const key=(i:number,n:number,outer:boolean)=>i+":"+n+":"+outer;
 const counts:number[]=[];
 type ChatCluster={id:number;previous_id:number|null;count:number};
 type ResultSource={source:"memory"|"work"|"file";id:number;title:string};
-type ResultMeta={search_passes?:number;evidence_status?:string;source_groups?:Record<string,number>;links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
+type ResultMeta={verified_steps?:PreviewStep[];conflict_pairs?:string[][];search_passes?:number;evidence_status?:string;source_groups?:Record<string,number>;links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
 type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string;metadata?:ResultMeta};
 type Snapshot={clusters:ChatCluster[];messages:ChatMessage[];duplicate?:boolean};
 let clusters:ChatCluster[]=[];
@@ -368,6 +368,7 @@ function resultCard(meta:ResultMeta,messageId:number){
  const root=document.createElement("details");root.className="chat-result";const summary=document.createElement("summary");summary.textContent="Источники и инструменты"+(meta.tools?.length?" · "+meta.tools.join(", "):"");root.append(summary);
  if(meta.evidence_status){const p=document.createElement("p");p.textContent=({local_result:"Локальный результат",retrieval_only:"Найдены выдержки, требуется проверка",insufficient:"Недостаточно данных",external_excerpts:"Интернет-выдержки, не проверенные факты"} as Record<string,string>)[meta.evidence_status]??meta.evidence_status;p.textContent+=" · проходов поиска: "+(meta.search_passes??0);root.append(p)}
  if(meta.steps?.length){const p=document.createElement("p");p.textContent=meta.steps.map(s=>s.tool+" · "+s.status).join(" / ");root.append(p)}
+ if(meta.verified_steps?.length){const b=document.createElement("button");b.type="button";b.textContent="Сохранить успешный сценарий";b.onclick=async()=>{if(busy)return;const name=prompt("Название проверенного сценария");if(!name?.trim())return;b.disabled=true;try{await agentApi("save",{name:name.trim().slice(0,80),steps:meta.verified_steps});chatStatus.textContent="Сценарий сохранён"}catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка"}finally{b.disabled=false}};root.append(b)}
  for(const h of meta.sources??[]){const b=document.createElement("button");b.type="button";b.textContent=h.title+" · #"+h.id;b.onclick=()=>sourceAction(h);root.append(b)}
  for(const h of meta.web_sources??[]){const div=document.createElement("div"),a=document.createElement("a");div.className="web-evidence";try{if(new URL(h.url).protocol!=="https:")continue}catch{continue}a.href=h.url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=h.title;div.append(a);const p=document.createElement("p");p.textContent=(h.date||"Дата не указана")+" · непроверенная выдержка: "+h.excerpt;div.append(p);root.append(div)}
  if(meta.warnings?.length){const p=document.createElement("p");p.textContent=meta.warnings.join(" ");p.className="result-warning";root.append(p)}
@@ -458,7 +459,7 @@ function clearFlow(){
  for(const [target,timer] of arrivalTimers){window.clearTimeout(timer);target.classList.remove("arrived-request","arrived-reply","arrived-memory","arrived-error")}
  arrivalTimers.clear();pendingClusters.clear();renderKey="";
 }
-function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"|"work"|"docs"|"web"):Promise<void>{
+function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"|"work"|"docs"|"web"|"conflict"):Promise<void>{
  if(motionOff()||document.hidden||flowLegs.size>=Math.max(3,Math.floor(12*quality)))return Promise.resolve();
  return new Promise(resolve=>{
   const layer=byId("traffic"),cls="quiet-"+kind;
@@ -550,7 +551,11 @@ function sourceEndpoint(ref:string):Endpoint|undefined{
  if(m[1]==="memory"&&!clusters.some(c=>c.id===id)||m[1]==="work"&&!workspaceMap.records.some(r=>r.id===id)||m[1]==="file"&&!workspaceMap.files.some(f=>f.id===id))return;
  return ()=>{const i=m[1]==="memory"?clusters.findIndex(c=>c.id===id):m[1]==="work"?workspaceMap.records.findIndex(r=>r.id===id):workspaceMap.files.findIndex(f=>f.id===id);return i<0?corePoint():screenPoint(m[1]==="memory"?memoryPoint(i):m[1]==="work"?workPoint(i):filePoint(i))}
 }
-async function animateEvidence(meta?:ResultMeta){if(!meta)return;await Promise.all((meta.links??[]).slice(0,4).map(async l=>{const a=sourceEndpoint(l.from),b=sourceEndpoint(l.to);if(a&&b)await playLeg(a,b,"memory")}))}
+async function animateEvidence(meta?:ResultMeta){
+ if(!meta)return;
+ await Promise.all((meta.links??[]).slice(0,4).map(async l=>{const a=sourceEndpoint(l.from),b=sourceEndpoint(l.to);if(a&&b)await playLeg(a,b,"memory")}));
+ await Promise.all((meta.conflict_pairs??[]).slice(0,3).map(async pair=>{const a=sourceEndpoint(pair[0]),b=pair[1]==="web"?()=>modulePoint("webIcon"):sourceEndpoint(pair[1]);if(a&&b)await playLeg(a,b,"conflict")}))
+}
 function chatPhase(phase:string){document.body.dataset.chatPhase=phase;group("chatIcon").dataset.phase=phase;chat.dataset.phase=phase;if(phase==="search")arrival(group("chatIcon"),"request")}
 type PreviewStep={id:string;tool:string;month:string;depends:string[]};
 async function previewChatPlan(request:{text:string;request_id:string}){
@@ -609,7 +614,7 @@ form.onsubmit=async e=>{
     if(plan.web_offer&&!localOnly&&confirm("Разрешить интернет-поиск? Внешнему поисковику будет отправлено только:\n"+plan.web_offer.query+"\nРежим: "+plan.web_offer.action)){
      checkPreparation();chatPhase("web");chatStatus.textContent="Интернет: получение источников…";
      const icon=group("webIcon");icon.classList.add("module-working");
-     try{await playLeg(corePoint,()=>modulePoint("webIcon"),"web");checkPreparation();plan=await routingPost<RoutePlan>("web",{token:plan.token,...plan.web_offer,confirm:true});await playLeg(()=>modulePoint("webIcon"),corePoint,"web");arrival(group("core"),"reply")}
+     try{await playLeg(corePoint,()=>modulePoint("webIcon"),"web");checkPreparation();plan=await routingPost<RoutePlan>("web",{token:plan.token,...plan.web_offer,confirm:true});await playLeg(()=>modulePoint("webIcon"),corePoint,"web");arrival(group("core"),"reply");await animateEvidence({...plan.metadata,links:[]})}
      catch(e){chatStatus.textContent="Интернет недоступен: "+(e instanceof Error?e.message:"ошибка");if(cancelPreparation)throw e}
      finally{icon.classList.remove("module-working")}
     }
@@ -739,7 +744,13 @@ chatResize.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="Arrow
 function setChatFull(on:boolean){document.body.classList.toggle("full-chat",on);chatFull.setAttribute("aria-pressed",String(on));chatFull.title=on?"Вернуть карту":"Развернуть чат";chatFull.setAttribute("aria-label",chatFull.title);requestFrame()}
 chatFull.onclick=()=>setChatFull(!document.body.classList.contains("full-chat"));
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.body.classList.contains("full-chat")&&!document.querySelector("dialog[open]"))setChatFull(false)});
-function resizePrompt(){chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px";const q=chatPrompt.value.toLowerCase(),h=byId("chatSuggestion");h.textContent=/сравн|excel|xlsx/.test(q)?"Таблицы: прикрепите файлы и укажите ключ: столбец":/новост|интернет|свеж/.test(q)?"Интернет: отдельное подтверждение":/статистик|график/.test(q)?"Статистика: 10 15 20":/отч[её]т|гсм|табел/.test(q)?"Отчёт: укажите месяц ГГГГ-ММ":""}
+function resizePrompt(){
+ chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px";
+ const q=chatPrompt.value.toLowerCase(),h=byId("chatSuggestion"),tools=byId("chatContextTools");
+ h.textContent=/сравн|excel|xlsx/.test(q)?"Таблицы: прикрепите файлы и укажите ключ: столбец":/новост|интернет|свеж/.test(q)?"Интернет: отдельное подтверждение":/статистик|график/.test(q)?"Статистика: 10 15 20":/отч[её]т|гсм|табел/.test(q)?"Отчёт: укажите месяц ГГГГ-ММ":"";
+ const candidates:[RegExp,string,string][]=[[/сравн|excel|xlsx|документ/,"toolAttach","Вложения"],[/статистик|график|анализ|сезон/,"toolCognitive","Анализ"],[/вычисл|посчитай|рассчитай/,"toolCalculator","Расчёт"],[/интернет|новост|свеж/,"toolWeb","Интернет"],[/отч[её]т|гсм|табел/,"toolReports","Отчёты"],[/автомат|сценар|расписан/,"toolAgent","Автоматизация"]];
+ tools.replaceChildren();if(!busy&&selected<0)for(const [pattern,id,label] of candidates.filter(x=>x[0].test(q)).slice(0,3)){const b=document.createElement("button");b.type="button";b.textContent=label;b.onclick=()=>{if(!busy)byId(id).click()};tools.append(b)}
+}
 chatPrompt.addEventListener("input",resizePrompt);
 chatPrompt.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!busy)form.requestSubmit(sendButton)}});
 async function copyText(text:string){
