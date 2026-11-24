@@ -112,13 +112,13 @@ class CognitiveTools:
         with closing(self.knowledge.chat.connect()) as db:
             h=db.execute("SELECT * FROM knowledge_items WHERE id=? AND state!='rejected'",(i,)).fetchone()
             if not h:raise ValueError("Гипотеза не найдена")
-            rows=db.execute("""SELECT l.kind,l.strength,k.id,k.subject,k.predicate,k.value,k.state,k.expires,k.confidence
+            rows=db.execute("""SELECT l.kind,l.strength,l.a,l.b,k.id,k.subject,k.predicate,k.value,k.state,k.expires,k.confidence
                 FROM knowledge_links l JOIN knowledge_items k ON k.id=CASE WHEN l.a=? THEN l.b ELSE l.a END
                 WHERE l.a=? OR l.b=? LIMIT 100""",(i,i,i)).fetchall()
         support=[];contradict=[];other=[]
         for r in rows:
             item=dict(r);item["usable"]=r["state"]=="confirmed" and (not r["expires"] or r["expires"]>=date.today().isoformat())
-            (support if r["kind"]=="supports" else contradict if r["kind"]=="contradicts" else other).append(item)
+            (support if r["kind"]=="supports" and r["b"]==i else contradict if r["kind"]=="contradicts" else other).append(item)
         s=sum(x["usable"] for x in support);c=sum(x["usable"] for x in contradict)
         return {"hypothesis":dict(h),"support":support,"contradiction":contradict,"other":other,"confirmed_support":s,"confirmed_contradiction":c,"assessment":"есть конфликт" if c else "есть поддержка" if s else "недостаточно подтверждённых доказательств","note":"Связи заданы пользователем. Наличие поддержки не доказывает причинность; не исключены общие причины и альтернативы."}
     def transfer(self,query):

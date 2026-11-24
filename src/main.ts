@@ -620,7 +620,7 @@ function updateToolState(){
  const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
  byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
  byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
- for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport","toolWeb","toolKnowledge"])byId<HTMLButtonElement>(id).disabled=busy;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport","toolWeb","toolKnowledge","toolCognitive"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
 byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
@@ -780,6 +780,69 @@ byId<HTMLFormElement>("knowledgeAddForm").onsubmit=e=>{e.preventDefault();void k
 byId("knowledgeConsolidate").onclick=()=>void knowledgeAction(async()=>{await knowledgeApi("consolidate");await knowledgeSearch()});
 byId("knowledgeStats").onclick=()=>void knowledgeAction(async()=>{const r=await knowledgeApi<{counts:{kind:string;state:string;n:number}[];stale:number;links:number;versions:number}>("stats");knowledgeOutput.replaceChildren();for(const row of r.counts)knowledgeText(knowledgeOutput,row.kind+" · "+row.state+" · "+row.n);knowledgeText(knowledgeOutput,"Устарело: "+r.stale+" · связи: "+r.links+" · ревизии: "+r.versions)});
 byId<HTMLFormElement>("knowledgeLinkForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(async()=>{const val=(id:string)=>byId<HTMLInputElement>(id).value;await knowledgeApi("link",{a:val("knowledgeA"),b:val("knowledgeB"),kind:val("knowledgeRelation")});await knowledgeSearch()})};
+type CognitiveAction="stats"|"column"|"compare"|"document"|"deduce"|"decisions"|"hypothesis"|"transfer"|"performance"|"draft";
+const cognitiveDialog=byId<HTMLDialogElement>("cognitiveDialog"),cognitiveSelect=byId<HTMLSelectElement>("cognitiveAction"),cognitiveInput=byId<HTMLTextAreaElement>("cognitiveInput"),cognitiveOutput=byId("cognitiveOutput");
+let cognitiveBusy=false;
+const cognitiveExamples:Record<CognitiveAction,object>={
+ stats:{values:[10,12,15,14,18,21]},
+ column:{file:1,column:"cost"},
+ compare:{a:1,b:2,key:"id"},
+ document:{file:1},
+ deduce:{facts:[["Автомобиль","статус","не осмотрен"]],rules:[{if:[["Автомобиль","статус","не осмотрен"]],then:["Автомобиль","действие","осмотр"]}]},
+ decisions:{options:[{name:"Вариант А",outcomes:[{probability:.6,value:100},{probability:.4,value:-20}]},{name:"Вариант Б",outcomes:[{probability:1,value:40}]}]},
+ hypothesis:{id:"ID знания"},
+ transfer:{query:"ГСМ"},
+ performance:{},
+ draft:{title:"Служебная записка",body:"Текст черновика для проверки"}
+};
+const cognitiveHelp:Record<CognitiveAction,string>={
+ stats:"Введите массив чисел по порядку наблюдений. График отражает только введённые значения.",
+ column:"ID CSV/XLSX на локальном диске и точное название числового столбца.",
+ compare:"ID двух таблиц и уникальный столбец-ключ. Сравнение значений без изменения файлов.",
+ document:"ID текстового файла или DOCX. Извлечённые поля — кандидаты, а не доказанные факты.",
+ deduce:"Факты — тройки субъект/свойство/значение. Правила с if и then. Вывод условен.",
+ decisions:"Задайте варианты, возможные исходы и вероятности (сумма 1 для каждого варианта).",
+ hypothesis:"ID знания из раздела «Память и знания». Поддержка и противоречия — явно заданные связи.",
+ transfer:"Поиск сохранённых сценариев по теме, без самостоятельного запуска.",
+ performance:"Диагностика по фактическому журналу инструментов.",
+ draft:"Введите заголовок и текст. Подтверждение создаёт локальный DOCX с отметкой «Черновик»."
+};
+function cognitiveFields(){
+ const a=cognitiveSelect.value as CognitiveAction;
+ cognitiveInput.value=JSON.stringify(cognitiveExamples[a],null,2);byId("cognitiveHelp").textContent=cognitiveHelp[a];cognitiveOutput.replaceChildren();byId("cognitiveChart").replaceChildren()
+}
+cognitiveSelect.onchange=cognitiveFields;
+byId("toolCognitive").onclick=()=>{closeTools();cognitiveFields();cognitiveDialog.showModal()};
+byId("cognitiveClose").onclick=()=>cognitiveDialog.close();
+function drawSeries(values:number[]){
+ const container=byId("cognitiveChart");container.replaceChildren();if(values.length<2||values.some(v=>!Number.isFinite(v)))return;
+ const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");
+ svg.setAttribute("viewBox","0 0 600 220");svg.setAttribute("role","img");svg.setAttribute("aria-label","Линейный график фактических наблюдений");
+ function node(name:string,attrs:Record<string,string>,text?:string){const n=document.createElementNS(ns,name);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,v);if(text!==undefined)n.textContent=text;svg.append(n);return n}
+ const low=Math.min(...values),high=Math.max(...values),span=high-low||1;
+ for(let i=0;i<=4;i++){const y=20+170*i/4,v=high-(high-low)*i/4;node("line",{x1:"65",x2:"585",y1:String(y),y2:String(y),stroke:"#29434f","stroke-width":".8"});node("text",{x:"60",y:String(y+4),fill:"#a7c8c9","font-size":"11","text-anchor":"end"},Number(v.toPrecision(5)).toString())}
+ const pts=values.map((v,i)=>[65+520*i/(values.length-1),high===low?105:20+170*(high-v)/span]);
+ node("polyline",{points:pts.map(p=>p.join(",")).join(" "),fill:"none",stroke:"#77d9c7","stroke-width":"2","stroke-linejoin":"round"});
+ if(values.length<=80)for(const [x,y] of pts)node("circle",{cx:String(x),cy:String(y),r:"2.5",fill:"#77d9c7"});
+ node("text",{x:"65",y:"210",fill:"#a7c8c9","font-size":"11"},"1");node("text",{x:"585",y:"210",fill:"#a7c8c9","font-size":"11","text-anchor":"end"},String(values.length));container.append(svg)
+}
+function displayCognitive(result:Record<string,unknown>){
+ cognitiveOutput.replaceChildren();byId("cognitiveChart").replaceChildren();
+ const values=result.values;if(Array.isArray(values)&&values.every(v=>typeof v==="number"))drawSeries(values as number[]);
+ const pre=document.createElement("pre");const output={...result};delete output.values;
+ pre.textContent=JSON.stringify(output,null,2);cognitiveOutput.append(pre)
+}
+byId<HTMLFormElement>("cognitiveForm").onsubmit=async e=>{
+ e.preventDefault();if(cognitiveBusy)return;const action=cognitiveSelect.value as CognitiveAction;
+ try{
+  const args=JSON.parse(cognitiveInput.value);if(!args||Array.isArray(args)||typeof args!=="object")throw Error("Введите объект параметров");
+  if(action==="draft"&&!confirm("Создать новый локальный DOCX-черновик?"))return;
+  cognitiveBusy=true;cognitiveOutput.textContent="Выполняется…";
+  const result=await agentApi<Record<string,unknown>>("cognitive",{...args,action,...(action==="draft"?{confirm:true}:{})});
+  displayCognitive(result);if(action==="draft")await refreshWorkspaceMap(true)
+ }catch(e){cognitiveOutput.textContent=e instanceof Error?e.message:"Ошибка"}finally{cognitiveBusy=false}
+};
+byId("cognitiveCopy").onclick=()=>void copyText(cognitiveOutput.innerText);
 type ImportPlan={token:string;kind:string;title:string;count:number;rows:Record<string,string|number|null>[]};
 const importDialog=byId<HTMLDialogElement>("importDialog"),importFile=byId<HTMLSelectElement>("importFile"),importKind=byId<HTMLSelectElement>("importKind"),importOutput=byId("importOutput"),importCommit=byId<HTMLButtonElement>("importCommit");
 let importPlan:ImportPlan|null=null,importBusy=false;
