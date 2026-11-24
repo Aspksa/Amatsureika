@@ -3,9 +3,11 @@ on: [push, pull_request]
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -14,7 +16,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: npm install --no-audit --no-fund
+      - name: Windows BAT first launch
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: Start.bat --check
+      - name: Linux first launch
+        if: runner.os == 'Linux'
+        run: python launcher.py --check
       - run: npm test
-      - run: npm run build
-      - run: python -m py_compile server.py
+      - run: python -m py_compile server.py launcher.py
+      - run: python tests/smoke.py
+      - name: Upload startup log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-log-${{ matrix.os }}
+          path: logs/startup.log
