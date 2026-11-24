@@ -44,7 +44,7 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void){
  }
  function renderWork(){
   const q=workFilter.value.trim().toLocaleLowerCase("ru"),fields=sections[kind].fields,filtered=rows.filter(r=>r.kind===kind&&(!r.archived||archived.checked)&&fields.map(f=>valueText(f,r.fields[f.key])).join(" ").toLocaleLowerCase("ru").includes(q));
-  for(const tab of id("workTabs").querySelectorAll<HTMLButtonElement>("button"))tab.classList.toggle("active",tab.dataset.kind===kind);
+  for(const tab of Array.from(id("workTabs").querySelectorAll<HTMLButtonElement>("button")))tab.classList.toggle("active",tab.dataset.kind===kind);
   id("workTitle").textContent=sections[kind].title;const total=kind==="timesheet"?" · "+filtered.filter(r=>!r.archived).reduce((a,r)=>a+Number(r.fields.hours),0).toLocaleString("ru")+" ч":kind==="fuel"?" · "+filtered.filter(r=>!r.archived).reduce((a,r)=>a+Number(r.fields.liters),0).toLocaleString("ru")+" л · "+filtered.filter(r=>!r.archived).reduce((a,r)=>a+Number(r.fields.cost),0).toLocaleString("ru")+" ₽":"";
   id("workTotal").textContent=filtered.length+" записей"+total;
   workTable.replaceChildren();if(!filtered.length){workTable.append(node("p","Записей пока нет.","workspace-empty"));return}
