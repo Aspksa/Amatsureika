@@ -25,6 +25,7 @@ class ChatStore:
                     text TEXT NOT NULL, created_at TEXT NOT NULL, request_id TEXT NOT NULL,
                     UNIQUE(cluster_id, position), UNIQUE(request_id, role)
                 );
+                CREATE INDEX IF NOT EXISTS chat_role_id ON chat_messages(role,id DESC);
                 CREATE TABLE IF NOT EXISTS chat_result_meta(request_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TRIGGER IF NOT EXISTS chat_capacity_insert BEFORE INSERT ON chat_messages
                 WHEN NEW.position < 1 OR NEW.position > 200 OR

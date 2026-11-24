@@ -4,6 +4,7 @@ type Value=string|number|null;
 type RecordRow={id:number;kind:WorkKind;fields:Record<string,Value>;archived:boolean};
 type Entry={id:number;parent:number|null;name:string;kind:"folder"|"file";size:number;updated:string};
 type DiskState={entries:Entry[];crumbs:{id:number;name:string}[]};
+type TreeItem={id:number;parent:number|null;name:string;kind:"folder"|"file";size:number;depth:number};
 const sections:Record<WorkKind,{title:string;fields:Field[]}>={
  staff:{title:"Сотрудники",fields:[{key:"name",label:"ФИО",type:"text"},{key:"job",label:"Должность",type:"text"},{key:"number",label:"Табельный номер",type:"text"}]},
  timesheet:{title:"Табель",fields:[{key:"employee",label:"Сотрудник",type:"ref",ref:"staff"},{key:"date",label:"Дата",type:"date"},{key:"hours",label:"Часы",type:"number",max:24},{key:"note",label:"Примечание",type:"text",optional:true}]},
@@ -21,6 +22,7 @@ async function api<T>(path:string,body?:object):Promise<T>{
 function err(e:unknown){return e instanceof Error?e.message:"Операция не выполнена"}
 function localDate(){const d=new Date();return [d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-")}
 export function setupWorkspace(bind:(id:string,open:()=>void)=>void,run:<T>(id:"workIcon"|"docsIcon",operation:()=>Promise<T>)=>Promise<T>){
+ const intelligence=<T>(value:object)=>api<T>("/api/agent/workspace",value);
  const workApi=<T>(path:string,body?:object)=>run("workIcon",()=>api<T>(path,body));
  const diskApi=<T>(path:string,body?:object)=>run("docsIcon",()=>api<T>(path,body));
  const wd=id<HTMLDialogElement>("workDialog"),dd=id<HTMLDialogElement>("diskDialog");
@@ -55,10 +57,26 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void,run:<T>(id:"
    const row=node("tr");if(r.archived)row.className="archived-row";
    for(const f of fields)row.append(node("td",valueText(f,r.fields[f.key])));
    const actions=node("td","","workspace-actions");
-   actions.append(button("Изменить",()=>edit(r)),button(r.archived?"Восстановить":"В архив",()=>{if(!r.archived&&!window.confirm("Перенести запись в архив?"))return;void changeWork({kind:r.kind,id:r.id,archived:!r.archived})}));row.append(actions);body.append(row);
+   actions.append(button("История",()=>void showRecord(r.id)),button("Изменить",()=>edit(r)),button(r.archived?"Восстановить":"В архив",()=>{if(!r.archived&&!window.confirm("Перенести запись в архив?"))return;void changeWork({kind:r.kind,id:r.id,archived:!r.archived})}));row.append(actions);body.append(row);
   }
   table.append(body);workTable.append(table);
  }
+async function showRecord(recordId:number){
+ try{const data=await intelligence<{record:RecordRow;related:RecordRow[];related_total:number;versions:{created:string;before:RecordRow|null;after:RecordRow}[];note:string}>({action:"record",id:recordId});const out=id("workOverview");out.replaceChildren(node("h3","Карточка #"+recordId),node("p",data.note));
+ const pre=node("pre",JSON.stringify(data.record.fields,null,2));out.append(pre,node("h4","Связанные записи: "+data.related_total));
+ for(const r of data.related){const b=button(sections[r.kind].title+" · #"+r.id+(r.archived?" · архив":""),()=>{const original=rows.find(x=>x.id===r.id);if(!original)return;kind=original.kind;edit(original);renderWork()});out.append(b)}
+ const details=node("details");details.append(node("summary","Изменения: "+data.versions.length));for(const v of data.versions)details.append(node("pre",v.created+"\n"+JSON.stringify(v.before?.fields??null)+" → "+JSON.stringify(v.after.fields)));out.append(details)
+ }catch(e){workStatus.textContent=err(e)}
+ }
+ id("garageOverview").onclick=async()=>{const month=id<HTMLInputElement>("garageMonth").value||localDate().slice(0,7);try{
+ const data=await intelligence<{month:string;counts:Record<string,number>;liters:string;cost:string;hours:string;vehicles:{id:number;name:string;liters:string;cost:string;liters_per_100km:string|null}[];staff:{id:number;name:string;hours:string;days:number}[];daily:{date:string;liters:string;cost:string}[];anomalies:{total:number;issues:{text:string}[]};note:string}>({action:"garage",month});
+ const out=id("workOverview");out.replaceChildren(node("h3","Гараж · "+data.month),node("p",Object.entries(data.counts).map(([k,v])=>sections[k as WorkKind].title+": "+v).join(" · ")),node("p",data.liters+" л · "+data.cost+" ₽ · "+data.hours+" ч"),node("p","Замечаний: "+data.anomalies.total),node("p",data.note));
+ for(const r of data.vehicles)out.append(button(r.name+" · "+r.liters+" л · "+r.cost+" ₽ · "+(r.liters_per_100km??"нет пробега")+" л/100 км",()=>void showRecord(r.id)));
+ for(const r of data.staff)out.append(button(r.name+" · "+r.hours+" ч · "+r.days+" дней",()=>void showRecord(r.id)));
+ const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");svg.setAttribute("viewBox","0 0 500 130");svg.setAttribute("aria-label","Суммы заправок по дням");svg.setAttribute("role","img");const max=Math.max(1,...data.daily.map(d=>Number(d.cost)));data.daily.forEach((d,i)=>{const bar=document.createElementNS(ns,"rect"),h=100*Number(d.cost)/max;bar.setAttribute("x",String(10+i*480/Math.max(1,data.daily.length)));bar.setAttribute("y",String(110-h));bar.setAttribute("height",String(h));bar.setAttribute("width",String(Math.max(2,450/Math.max(1,data.daily.length))));bar.setAttribute("fill","#77d9c7");const t=document.createElementNS(ns,"title");t.textContent=d.date+": "+d.cost+" ₽";bar.append(t);svg.append(bar)});if(data.daily.length)out.append(svg);
+ for(const issue of data.anomalies.issues.slice(0,15))out.append(node("p",issue.text));
+ }catch(e){workStatus.textContent=err(e)}};
+ id<HTMLInputElement>("garageMonth").value=localDate().slice(0,7);
  async function loadWork(reset=true){const result=await workApi<{records:RecordRow[]}>("/api/work");rows=result.records;renderWork();if(reset)edit()}
  async function changeWork(payload:object){
   if(workBusy)return;workBusy=true;workStatus.textContent="Сохранение…";
@@ -89,16 +107,30 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void,run:<T>(id:"
    const actions=node("div","","workspace-actions");
    if(trash)actions.append(button("Восстановить",()=>void diskChange({action:"restore",id:r.id})));
    else{
-    if(r.kind==="file"&&r.size<=262144&&/\.(txt|md|csv|log|json)$/i.test(r.name))actions.append(button("Просмотр",()=>void preview(r)));
-    actions.append(button("Переименовать",()=>{const n=window.prompt("Новое имя",r.name);if(n&&n!==r.name)void diskChange({action:"rename",id:r.id,name:n})}),button("В корзину",()=>{if(window.confirm("Перенести в корзину: "+r.name+"?"))void diskChange({action:"trash",id:r.id})}));
+    if(r.kind==="file"&&/\.(txt|md|csv|log|json|docx|xlsx|pdf|tsv)$/i.test(r.name))actions.append(button("Просмотр",()=>void preview(r)));
+    actions.append(button("Переместить",()=>void chooseMove(r)),button("Переименовать",()=>{const n=window.prompt("Новое имя",r.name);if(n&&n!==r.name)void diskChange({action:"rename",id:r.id,name:n})}),button("В корзину",()=>{if(window.confirm("Перенести в корзину: "+r.name+"?"))void diskChange({action:"trash",id:r.id})}));
    }
    row.append(actions);diskList.append(row);
   }
  }
- async function preview(r:Entry){
-  try{const text=await run("docsIcon",async()=>{const response=await fetch("/api/disk/download?id="+r.id);if(!response.ok)throw Error("Файл недоступен");return response.text()});id("diskPreviewTitle").textContent=r.name;id("diskPreviewText").textContent=text;id("diskPreview").hidden=false}
-  catch(e){diskStatus.textContent=err(e)}
+ async function chooseMove(r:Entry){
+  try{const data=await intelligence<{items:TreeItem[]}>({action:"tree"});const out=id("diskInsight");out.replaceChildren(node("p","Переместить "+r.name));
+   const select=node("select"),root=node("option","Корень");root.value="";select.append(root);
+   for(const f of data.items.filter(x=>x.kind==="folder"&&x.id!==r.id)){const o=node("option","—".repeat(Math.min(12,f.depth))+f.name);o.value=String(f.id);select.append(o)}
+   out.append(select,button("Подтвердить",()=>{void diskChange({action:"move",id:r.id,parent:select.value?Number(select.value):null});out.replaceChildren()}))
+  }catch(e){diskStatus.textContent=err(e)}
  }
+ async function preview(r:Entry){
+  try{const data=await run("docsIcon",()=>intelligence<{title:string;kind:string;text?:string;columns?:string[];rows?:Record<string,string>[];total_rows?:number;note?:string;truncated?:boolean}>({action:"preview",id:r.id}));id("diskPreviewTitle").textContent=data.title;const out=id("diskPreviewText");out.replaceChildren();
+   if(data.kind==="pdf"){const a=node("a","Открыть PDF в браузере");a.href="/api/disk/pdf?id="+r.id;a.target="_blank";a.rel="noopener noreferrer";out.append(a)}
+   else if(data.kind==="table"){const columns=data.columns??[],table=node("table"),header=node("tr");for(const c of columns)header.append(node("th",c));table.append(header);for(const row of data.rows??[]){const tr=node("tr");for(const c of columns)tr.append(node("td",row[c]??""));table.append(tr)}out.append(table,node("p","Строк: "+data.total_rows))}
+   else out.textContent=data.text??"";
+   if(data.note||data.truncated)out.append(node("p",data.note??"Показана ограниченная выдержка"));id("diskPreview").hidden=false
+  }catch(e){diskStatus.textContent=err(e)}
+ }
+ id("diskTree").onclick=async()=>{try{const data=await intelligence<{items:TreeItem[];truncated:boolean}>({action:"tree"});const out=id("diskInsight");out.replaceChildren(node("p","Иерархия диска"+(data.truncated?" · ограниченная":"")));for(const f of data.items){const b=button((f.kind==="folder"?"▱ ":"▤ ")+f.name,()=>{if(f.kind==="folder"){parent=f.id;trash=false;void refreshDisk()}else void preview({...f,updated:""})});b.style.marginLeft=Math.min(14,f.depth)*12+"px";out.append(b)}}catch(e){diskStatus.textContent=err(e)}};
+ id("diskDuplicates").onclick=async()=>{try{const data=await intelligence<{groups:{size:number;files:{id:number;name:string}[]}[];hashed:number;skipped_count:number;note:string}>({action:"duplicates"});const out=id("diskInsight");out.replaceChildren(node("p",data.note),node("p","Групп: "+data.groups.length+" · проверено "+data.hashed+" · пропущено "+data.skipped_count));for(const g of data.groups)out.append(node("p",g.files.map(f=>"#"+f.id+" "+f.name).join(" = ")+" · "+g.size+" байт"))}catch(e){diskStatus.textContent=err(e)}};
+ id("diskClassify").onclick=async()=>{try{const data=await intelligence<{items:{id:number;name:string;tags:{label:string;basis:string}[]}[];note:string;truncated:boolean}>({action:"classify"});const out=id("diskInsight");out.replaceChildren(node("p",data.note+(data.truncated?" · ограничено первыми 100 файлами":"")));for(const f of data.items)out.append(node("p",f.name+" · "+(f.tags.map(t=>t.label+" ("+t.basis+")").join(", ")||"нет предложения")))}catch(e){diskStatus.textContent=err(e)}};
  async function refreshDisk(){
   const rev=++revision,folder=parent,inTrash=trash;diskStatus.textContent="Загрузка…";id("diskPreview").hidden=true;
   try{const state=await diskApi<DiskState>("/api/disk?"+(inTrash?"trash=1":folder===null?"":"parent="+folder));if(rev!==revision)return;

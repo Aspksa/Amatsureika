@@ -87,6 +87,16 @@ def decisions(options):
     results.sort(key=lambda r:r["expected"],reverse=True)
     return {"options":results,"note":"Оценка зависит от введённых вероятностей и значений; не автоматическое решение."}
 
+def counterfactual(facts,rules,remove,add,target):
+    if not isinstance(remove,list) or not isinstance(add,list) or len(remove)>30 or len(add)>30:raise ValueError("До 30 замен")
+    if not isinstance(facts,list) or len(facts)>100:raise ValueError("До 100 фактов")
+    base={triple(x) for x in facts};deleted={triple(x) for x in remove};added={triple(x) for x in add};goal=triple(target)
+    if not deleted<=base:raise ValueError("Удаляемое условие отсутствует")
+    changed=(base-deleted)|added
+    a=deduce([list(x) for x in sorted(base)],rules);b=deduce([list(x) for x in sorted(changed)],rules)
+    before=base|{tuple(x) for x in a["conclusions"]};after=changed|{tuple(x) for x in b["conclusions"]}
+    return {"target":goal,"baseline_reachable":goal in before,"alternative_reachable":goal in after,"new_conclusions":sorted(after-before),"lost_conclusions":sorted(before-after),"baseline_conflicts":a["conflicts"],"alternative_conflicts":b["conflicts"],"baseline_proof":a["proof"],"alternative_proof":b["proof"],"note":"Контрфактический расчёт в заданной системе правил, не вывод о реальных причинах."}
+
 class CognitiveTools:
     def __init__(self,workspace,knowledge,agent,extract):
         self.workspace,self.knowledge,self.agent,self.extract=workspace,knowledge,agent,extract
@@ -236,6 +246,8 @@ class CognitiveTools:
             elif a=="document" and set(v)=={"action","file"}:r=self.document(v["file"])
             elif a=="deduce" and set(v)=={"action","facts","rules"}:r=deduce(v["facts"],v["rules"])
             elif a=="decisions" and set(v)=={"action","options"}:r=decisions(v["options"])
+            elif a=="counterfactual" and set(v)=={"action","facts","rules","remove","add","target"}:r=counterfactual(v["facts"],v["rules"],v["remove"],v["add"],v["target"])
+            elif a=="capabilities" and set(v)=={"action"}:r={"tools":self.agent.state()["registry"],"limits":["Локальная логика ограничена заданными правилами","Внешний поиск и Cloud.ru требуют отдельного согласия","PDF-текст не извлекается","Причинность не определяется по совпадению слов"],"note":"Перечень возможностей, не оценка сознания."}
             elif a=="hypothesis" and set(v)=={"action","id"}:r=self.hypothesis(v["id"])
             elif a=="transfer" and set(v)=={"action","query"}:r=self.transfer(v["query"])
             elif a=="performance" and set(v)=={"action"}:r=self.performance()

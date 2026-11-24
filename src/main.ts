@@ -147,7 +147,7 @@ function select(i:number){
 function requestFrame(){if(!frame)frame=requestAnimationFrame(renderFrame)}
 function renderFrame(now:number){
  frame=0;
- if(lastFrame&&(moving||flight)){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
+ if(lastFrame&&(moving||flight||flowLegs.size)){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
  lastFrame=now;
  if(moving){const p=motionOff()?1:Math.min(1,(now-start)/700);transition=p*p*(3-2*p);moving=p<1;if(!moving){oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null;oldWorkPoints=null}}
  if(flight){const f=flight,p=motionOff()?1:Math.min(1,(now-f.begin)/650),e=p*p*(3-2*p);zoom=Math.exp(Math.log(f.fromZ)+(Math.log(f.z)-Math.log(f.fromZ))*e);tx=f.fromX+(f.x-f.fromX)*e;ty=f.fromY+(f.y-f.fromY)*e;if(p===1){flight=null;saveCamera()}}
@@ -532,6 +532,7 @@ async function streamRequest(body:object):Promise<Snapshot>{
  }finally{await reader.cancel().catch(()=>{});clearStreamPreview()}
 }
 async function retrieveAnimation(hits:SearchHit[]){
+ if(byId<HTMLInputElement>("cameraFollow").checked&&!motionOff()&&!document.hidden&&selected<0&&!document.body.classList.contains("full-chat")){const first=hits.find(h=>h.source==="memory"&&clusters.some(c=>c.id===h.id));if(first){const i=clusters.findIndex(c=>c.id===first.id),p=anchor(i),z=Math.min(1.8,Math.max(.35,zoom));animateCamera(z,-p.x*z*.7,-p.y*z*.7)}}
  const distinct=Array.from(new Map(hits.map(h=>[h.source+":"+h.id,h])).values());
  await Promise.all(distinct.map(async h=>{
   const locate=()=>h.source==="memory"?clusters.findIndex(c=>c.id===h.id):h.source==="work"?workspaceMap.records.findIndex(r=>r.id===h.id):workspaceMap.files.findIndex(f=>f.id===h.id);
@@ -874,7 +875,7 @@ byId<HTMLFormElement>("correctionForm").onsubmit=async e=>{e.preventDefault();co
 byId<HTMLFormElement>("webForm").onsubmit=e=>{e.preventDefault();const action=webActionSelect.value,input=webInput.value.trim();if(action==="watch"&&!confirm("Разрешить автоматическую проверку этого публичного сайта раз в час при работающем сервере?"))return;void webRun(action,input)};
 byId("webCopy").onclick=()=>void copyText(webOutput.innerText);
 byId("webToChat").onclick=()=>{if(busy||selected>=0)return;const excerpt=webOutput.innerText.trim();if(!excerpt)return;chatPrompt.value=("Проанализируй эти интернет-выдержки (не проверенные факты):\n"+excerpt).slice(0,1000);resizePrompt();webDialog.close();chatPrompt.focus()};
-type KnowledgeItem={id:string;kind:string;subject:string;predicate:string;value:string;context:string;state:string;confidence:number;expires:string;updated:string;stale?:boolean;semantic_score?:number;sources?:{source_type:string;source_id:string}[];links?:{a:string;b:string;kind:string;strength:number}[];versions?:number};
+type KnowledgeItem={id:string;kind:string;subject:string;predicate:string;value:string;context:string;state:string;confidence:number;expires:string;updated:string;stale?:boolean;semantic_score?:number;fusion_score?:number;created?:string;uses?:number;sources?:{source_type:string;source_id:string}[];links?:{a:string;b:string;kind:string;strength:number}[];versions?:number};
 const knowledgeDialog=byId<HTMLDialogElement>("knowledgeDialog"),knowledgeOutput=byId("knowledgeOutput"),knowledgeQuery=byId<HTMLInputElement>("knowledgeQuery");
 let knowledgeBusy=false;
 async function knowledgeApi<T>(action:string,value:object={}):Promise<T>{return agentApi<T>("knowledge",{action,...value})}
@@ -886,6 +887,7 @@ function showKnowledge(items:KnowledgeItem[]){
   const card=document.createElement("article");card.className="knowledge-entry";
   knowledgeText(card,item.subject+" · "+item.predicate+": "+item.value);
   knowledgeText(card,item.kind+" · "+item.state+" · уверенность "+Math.round(item.confidence*100)+"%"+(item.stale?" · устарело":"")+" · "+item.updated.slice(0,10));
+  if(item.fusion_score!==undefined)knowledgeText(card,"Гибридное ранжирование: "+item.fusion_score.toFixed(3));
   if(item.semantic_score!==undefined)knowledgeText(card,"Векторное сходство: "+item.semantic_score.toFixed(3));
   if(item.sources)knowledgeText(card,"Источники: "+item.sources.map(s=>s.source_type+" #"+s.source_id).join(", "));
   if(item.links?.length)knowledgeText(card,"Связи: "+item.links.map(x=>x.kind+" "+(x.a===item.id?x.b:x.a)+" ×"+x.strength).join("; "));
@@ -911,12 +913,25 @@ byId<HTMLFormElement>("knowledgeSearchForm").onsubmit=e=>{e.preventDefault();voi
 byId("knowledgeSemantic").onclick=()=>void knowledgeAction(async()=>{const q=knowledgeQuery.value.trim();if(!q)throw Error("Введите запрос");if(localOnly)throw Error("Отключите локальный режим");if(!confirm("Платный запрос Qwen embeddings. Будет отправлено:\n"+q))return;showKnowledge((await knowledgeApi<{items:KnowledgeItem[]}>("semantic",{query:q,confirm:true})).items)});
 byId<HTMLFormElement>("knowledgeAddForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(async()=>{const value=(id:string)=>byId<HTMLInputElement>(id).value;await knowledgeApi("add",{kind:value("knowledgeKind"),subject:value("knowledgeSubject"),predicate:value("knowledgePredicate"),value:value("knowledgeValue"),context:value("knowledgeContext"),expires:value("knowledgeExpires")});knowledgeQuery.value=value("knowledgeSubject");await knowledgeSearch()})};
 byId("knowledgeConsolidate").onclick=()=>void knowledgeAction(async()=>{await knowledgeApi("consolidate");await knowledgeSearch()});
+byId("knowledgeFusion").onclick=()=>void knowledgeAction(async()=>showKnowledge((await knowledgeApi<{items:KnowledgeItem[]}>("fusion",{query:knowledgeQuery.value.trim()})).items));
+byId("knowledgeTimeline").onclick=()=>void knowledgeAction(async()=>showKnowledge((await knowledgeApi<{items:KnowledgeItem[]}>("timeline",{query:knowledgeQuery.value})).items));
+byId("knowledgeHealth").onclick=()=>void knowledgeAction(async()=>{const data=await knowledgeApi<Record<string,unknown>>("health");knowledgeOutput.replaceChildren();const pre=document.createElement("pre");pre.textContent=JSON.stringify(data,null,2);knowledgeOutput.append(pre)});
+byId("knowledgeRepair").onclick=()=>void knowledgeAction(async()=>{if(!confirm("Перестроить только поисковые индексы? Исходные записи сохранятся."))return;await routingPost("repair-index",{confirm:true});knowledgeOutput.textContent="Индексы перестроены"});
+byId("knowledgeGraph").onclick=()=>void knowledgeAction(async()=>{
+ const data=await knowledgeApi<{items:KnowledgeItem[];links:{a:string;b:string;kind:string;strength:number}[];note:string}>("graph",{query:knowledgeQuery.value});
+ knowledgeOutput.replaceChildren();knowledgeText(knowledgeOutput,data.note);
+ const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");svg.setAttribute("viewBox","0 0 600 420");svg.setAttribute("class","knowledge-map");
+ const nodes=data.items.slice(0,30),points=new Map(nodes.map((n,i)=>[n.id,{x:300+Math.cos(i*2.39996)*Math.sqrt(i+1)*49,y:210+Math.sin(i*2.39996)*Math.sqrt(i+1)*34}]));
+ for(const l of data.links){const a=points.get(l.a),b=points.get(l.b);if(!a||!b)continue;const e=document.createElementNS(ns,"line");e.setAttribute("x1",String(a.x));e.setAttribute("y1",String(a.y));e.setAttribute("x2",String(b.x));e.setAttribute("y2",String(b.y));e.setAttribute("stroke",l.kind==="contradicts"?"#e6a581":"#658c9c");e.setAttribute("stroke-dasharray",l.kind==="hypothesis_cause"?"4 3":"none");svg.append(e)}
+ for(const n of nodes){const p=points.get(n.id)!;const g=document.createElementNS(ns,"g");g.setAttribute("transform","translate("+p.x+" "+p.y+")");g.setAttribute("tabindex","0");g.setAttribute("role","button");g.setAttribute("aria-label",n.subject+" "+n.predicate);const dot=document.createElementNS(ns,"circle");dot.setAttribute("r","9");dot.setAttribute("fill",n.state==="confirmed"?"#77d9c7":"#7c91a8");const title=document.createElementNS(ns,"title");title.textContent=n.subject+" · "+n.predicate;g.append(dot,title);g.onclick=()=>showKnowledge([n]);g.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();showKnowledge([n])}};svg.append(g)}knowledgeOutput.append(svg);
+});
 byId("knowledgeStats").onclick=()=>void knowledgeAction(async()=>{const r=await knowledgeApi<{counts:{kind:string;state:string;n:number}[];stale:number;links:number;versions:number}>("stats");knowledgeOutput.replaceChildren();for(const row of r.counts)knowledgeText(knowledgeOutput,row.kind+" · "+row.state+" · "+row.n);knowledgeText(knowledgeOutput,"Устарело: "+r.stale+" · связи: "+r.links+" · ревизии: "+r.versions)});
 byId<HTMLFormElement>("knowledgeLinkForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(async()=>{const val=(id:string)=>byId<HTMLInputElement>(id).value;await knowledgeApi("link",{a:val("knowledgeA"),b:val("knowledgeB"),kind:val("knowledgeRelation")});await knowledgeSearch()})};
-type CognitiveAction="stats"|"column"|"compare"|"document"|"deduce"|"decisions"|"hypothesis"|"transfer"|"performance"|"draft"|"seasonality"|"profile"|"research_docs"|"convert"|"anomalies";
+type CognitiveAction="stats"|"column"|"compare"|"document"|"deduce"|"decisions"|"hypothesis"|"transfer"|"performance"|"draft"|"seasonality"|"profile"|"research_docs"|"convert"|"anomalies"|"counterfactual"|"capabilities";
 const cognitiveDialog=byId<HTMLDialogElement>("cognitiveDialog"),cognitiveSelect=byId<HTMLSelectElement>("cognitiveAction"),cognitiveInput=byId<HTMLTextAreaElement>("cognitiveInput"),cognitiveOutput=byId("cognitiveOutput");
 let cognitiveBusy=false;
 const cognitiveExamples:Record<CognitiveAction,object>={
+ counterfactual:{facts:[["Машина","состояние","неисправна"]],rules:[{if:[["Машина","состояние","неисправна"]],then:["Машина","решение","осмотр"]}],remove:[["Машина","состояние","неисправна"]],add:[["Машина","состояние","исправна"]],target:["Машина","решение","осмотр"]},capabilities:{},
  stats:{values:[10,12,15,14,18,21]},
  seasonality:{values:[10,20,12,22,14,24],period:2},profile:{file:1},research_docs:{files:[1,2]},convert:{file:1,format:"json"},anomalies:{},
  column:{file:1,column:"cost"},
@@ -930,6 +945,7 @@ const cognitiveExamples:Record<CognitiveAction,object>={
  draft:{title:"Служебная записка",body:"Текст черновика для проверки"}
 };
 const cognitiveHelp:Record<CognitiveAction,string>={
+ counterfactual:"Сравнение вывода при замене явно заданных предпосылок. Не причинное доказательство.",capabilities:"Реестр доступных инструментов и границы локального анализа.",
  stats:"Введите массив чисел по порядку наблюдений. График отражает только введённые значения.",
  seasonality:"Равномерный временной ряд; для сезонности минимум три заданных цикла.",profile:"Профиль первого листа CSV/XLSX: пропуски, уникальные и числовые значения.",research_docs:"ID 2–6 текстовых документов; общие слова и возможные расхождения полей.",convert:"Преобразование таблицы в CSV/JSON на локальном Диске.",anomalies:"Проверка существующих рабочих реестров без изменений.",
  column:"ID CSV/XLSX на локальном диске и точное название числового столбца.",
@@ -1096,7 +1112,7 @@ byId("toolCalculator").onclick=()=>{closeTools();byId<HTMLDialogElement>("calcul
 byId("calculatorClose").onclick=()=>byId<HTMLDialogElement>("calculatorDialog").close();
 byId<HTMLFormElement>("calculatorForm").onsubmit=async e=>{
  e.preventDefault();const output=byId("calculatorResult");
- try{const data=await routingPost<{result:string}>("calculate",{expression:byId<HTMLInputElement>("calculatorExpression").value});output.textContent=data.result}
+ try{const data=await routingPost<{result:string}>("calculate",{expression:byId<HTMLInputElement>("calculatorExpression").value,variables:JSON.parse(byId<HTMLTextAreaElement>("calculatorVariables").value||"{}")});output.textContent=data.result}
  catch(e){output.textContent=e instanceof Error?e.message:"Ошибка вычисления"}
 };
 byId("calculatorInsert").onclick=()=>{if(busy||selected>=0)return;const value=byId("calculatorResult").textContent??"";if(!/^-?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/i.test(value))return;chatPrompt.value=(chatPrompt.value+value).slice(0,1000);resizePrompt();byId<HTMLDialogElement>("calculatorDialog").close();chatPrompt.focus()};

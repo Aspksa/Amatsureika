@@ -2,6 +2,7 @@
 import json
 import io
 from report_export import xlsx, docx
+from workspace_intelligence import WorkspaceIntelligence
 from tool_engine import ToolEngine, catalog, command, report_text
 from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
 from agent_engine import Agent, parse as agent_parse
@@ -19,7 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 import zipfile
@@ -81,8 +82,9 @@ class Router:
         self.web=WebResearch(chat,workspace)
         self.knowledge=Knowledge(chat,cloud)
         self.cognitive=CognitiveTools(workspace,self.knowledge,self.agent,extract)
+        self.workspace_intelligence=WorkspaceIntelligence(self)
         self.lock=threading.RLock()
-        self.plans=OrderedDict();self.next_index=0;self.agent.index_refresh=self.background_index
+        self.plans=OrderedDict();self.inflight=set();self.web_inflight=set();self.next_index=0;self.agent.index_refresh=self.background_index
         self.fts=True
         try:
             with closing(chat.connect()) as db, db:
@@ -210,6 +212,17 @@ class Router:
             if len(distinct)>=8: break
         return distinct
 
+    def repair_index(self,value):
+        if value!={"confirm":True} or value.get("confirm") is not True:raise ValueError("Подтвердите восстановление поискового индекса")
+        if not self.fts:raise ValueError("FTS5 недоступен")
+        with closing(self.chat.connect()) as db,db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO routing_chat_fts(routing_chat_fts) VALUES('rebuild')")
+            db.execute("DELETE FROM routing_workspace_fts")
+            db.execute("DELETE FROM routing_workspace_versions")
+            self.refresh_index(db,self.sources(db))
+        return {"ok":True,"note":"Восстановлены только производные индексы; исходные записи сохранены."}
+
     def search_tool(self,value):
         if not isinstance(value,dict) or set(value)!={"text","scope"} or value["scope"] not in ("all","memory","work","file"):
             raise ValueError("Некорректная область поиска")
@@ -303,6 +316,13 @@ class Router:
             meta["tools"].append("document")
             meta["document_summary"]="\n".join(parts)[:3000]
         if advanced_answer is None and not attachment_ids:
+            garage_match=re.fullmatch(r"(?:обзор|сводка)\s+гаража(?:\s+за\s+(\d{4}-\d{2}))?[?.]?",q,re.I)
+            if garage_match:
+                data=self.workspace_intelligence.garage(garage_match[1] or date.today().strftime("%Y-%m"))
+                advanced_answer=f"Обзор гаража за {data['month']}: {data['liters']} л, {data['cost']} ₽, {data['hours']} ч. Замечаний: {data['anomalies']['total']}.\n"+data["note"]
+                meta["tools"].append("garage")
+                meta["table"]={"columns":["Автомобиль","Литры","Рубли","л/100 км (оценка)"],"rows":[[v["name"],v["liters"],v["cost"],v["liters_per_100km"] or "нет пробега"] for v in data["vehicles"][:30]],"total_rows":len(data["vehicles"])}
+                advanced_sources=[{"source":"work","id":v["id"],"title":v["name"]} for v in data["vehicles"][:8]]
             calc=re.fullmatch(r"(?:посчитай|вычисли|сколько будет)\s+(.+)",q,re.I)
             if calc and re.fullmatch(r"[0-9.,+*/() ×÷−-]+[?]?",calc[1]):
                 expression=calc[1].rstrip("?")
@@ -392,7 +412,9 @@ class Router:
         if not sufficient and not mutation:
             # Reserve space for verified user knowledge and recent context.
             context_parts=[bounded_context(context_parts,3500)] if context_parts else []
-            for part in self.knowledge.context(question):
+            followup=bool(re.fullmatch(r"(?:а\s+)?(?:почему|подробнее|продолжи|а дальше|что дальше|как именно)[?.!\s]*",question,re.I))
+            knowledge_query=(previous[0][:380]+" "+question)[:500] if followup and previous else question
+            for part in self.knowledge.context(knowledge_query):
                 if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
             with closing(self.chat.connect()) as db:
                 recent=db.execute("SELECT id,role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT ?",(value["request_id"],12 if hints["style"]=="deep" else 6)).fetchall()[::-1]
@@ -420,8 +442,11 @@ class Router:
         with self.lock:
             now=time.monotonic()
             for k in list(self.plans):
-                if now-self.plans[k][0]>PLAN_TTL: del self.plans[k]
-            while len(self.plans)>=64:self.plans.popitem(last=False)
+                if now-self.plans[k][0]>PLAN_TTL and k not in self.web_inflight: del self.plans[k]
+            while len(self.plans)>=64:
+                victim=next((k for k in self.plans if k not in self.web_inflight),None)
+                if victim is None:raise RuntimeError("Слишком много активных планов")
+                del self.plans[victim]
             self.plans[plan["token"]]=(now,value,plan)
         return plan
 
@@ -436,13 +461,21 @@ class Router:
 
     def authorize_web(self,value):
         if not isinstance(value,dict) or set(value)!={"token","query","action","confirm"} or value["confirm"] is not True:raise ValueError("Нужно подтверждение интернета")
+        if not isinstance(value["token"],str):raise ValueError("Некорректный план")
         with self.lock:
             item=self.plans.get(value["token"])
             if not item or time.monotonic()-item[0]>PLAN_TTL:raise ValueError("План устарел")
             plan=item[2];offer=plan.get("web_offer")
             if not offer or value["query"]!=offer["query"] or value["action"]!=offer["action"]:raise ValueError("Запрос изменился")
             plan["web_offer"]=None # one attempt; no automatic external retry
+            self.web_inflight.add(value["token"])
+        try:
             data=self.web.dispatch({"action":offer["action"],"query":offer["query"],"confirm":True})
+        except BaseException:
+            with self.lock:self.web_inflight.discard(value["token"])
+            raise
+        with self.lock:
+            self.web_inflight.discard(value["token"])
             sources=web_evidence(data);meta=plan["metadata"];meta["web_sources"]=sources;meta["tools"].append("web")
             conflicts=possible_conflicts(plan["hits"],sources)
             plan["conflicts"]=(plan["conflicts"]+conflicts)[:6]
@@ -466,22 +499,26 @@ class Router:
         if not isinstance(value,dict) or set(value) not in ({"token","request_id","text","cloud"},{"token","request_id","text","cloud","approve_edit"}) or type(value["cloud"]) is not bool or type(value.get("approve_edit",False)) is not bool:
             raise ValueError("Некорректное подтверждение")
         req=validate({"text":value["text"],"request_id":value["request_id"]})
+        existing=self.chat.existing_request(req)
+        if existing:return existing
         with self.lock:
-            existing=self.chat.existing_request(req)
-            if existing: return existing
-            if not isinstance(value["token"],str): raise ValueError("Некорректный план")
+            if req["request_id"] in self.inflight:raise RuntimeError("Запрос уже выполняется")
+            if len(self.inflight)>=4:raise RuntimeError("Слишком много активных запросов")
+            if not isinstance(value["token"],str):raise ValueError("Некорректный план")
+            if value["token"] in self.web_inflight:raise RuntimeError("Интернет-запрос ещё выполняется")
             item=self.plans.get(value["token"])
             if not item or time.monotonic()-item[0]>PLAN_TTL or item[1]!=req:
                 raise ValueError("План поиска устарел; повторите поиск")
-            if not self.chat.startup_health["ok"]: raise RuntimeError("Memory integrity failure")
-            plan=item[2]
-            mutation=plan.get("mutation")
+            if not self.chat.startup_health["ok"]:raise RuntimeError("Memory integrity failure")
+            plan=item[2];mutation=plan.get("mutation")
             if value.get("approve_edit") and not mutation:raise ValueError("Нет изменения для подтверждения")
             paid=value["cloud"] and not plan["sufficient"]
+            # Reserve request and consume the exact plan before any external I/O.
+            self.inflight.add(req["request_id"]);del self.plans[value["token"]]
+        try:
+            existing=self.chat.existing_request(req)
+            if existing:return existing
             if paid:
-                # Single attempt for the approved plan. No auto-retry after an
-                # ambiguous transport error; the next plan requires consent again.
-                del self.plans[value["token"]]
                 with self.cloud.send_lock:
                     existing=self.chat.existing_request(req)
                     if existing:return existing
@@ -495,21 +532,32 @@ class Router:
                     answer="Изменение сохранено локально: запись #"+str(mutation["id"])+" · "+mutation["label"]+": "+str(mutation["before"])+" → "+str(mutation["after"])
                 meta=plan["metadata"];meta["warnings"]+=verify_reply(answer,meta)
                 result=self.chat.memory_append(req,answer,meta)
-                self.plans.pop(value["token"],None)
             return {**result,"route":"cloud" if paid else "local"}
+        finally:
+            with self.lock:self.inflight.discard(req["request_id"])
+
 
 def calculate(value):
-    if not isinstance(value,dict) or set(value)!={"expression"}:
+    if not isinstance(value,dict) or set(value) not in ({"expression"},{"expression","variables"}):
         raise ValueError("Некорректное выражение")
     expr=value["expression"]
     if not isinstance(expr,str) or not expr.strip() or len(expr)>160:
         raise ValueError("Введите выражение до 160 символов")
     expr=expr.strip().replace("×","*").replace("÷","/").replace("−","-").replace(",",".")
-    if not re.fullmatch(r"[0-9.+*/() \t-]+",expr):
-        raise ValueError("Только числа, + − × ÷ и скобки")
+    variables=value.get("variables",{})
+    if not isinstance(variables,dict) or len(variables)>20:raise ValueError("До 20 переменных")
+    clean={}
+    for key,v in variables.items():
+        if not isinstance(key,str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,19}",key) or type(v) not in (str,int,float) or len(str(v))>40:raise ValueError("Некорректная переменная")
+        try:n=Decimal(str(v))
+        except DecimalException:raise ValueError("Некорректное число") from None
+        if not n.is_finite() or abs(n)>Decimal("1e50"):raise ValueError("Число слишком большое")
+        clean[key]=n
+    if not re.fullmatch(r"[A-Za-z0-9_.+*/() \t-]+",expr):raise ValueError("Только числа, переменные, + − × ÷ и скобки")
     def walk(node):
-        if isinstance(node,ast.Constant) and type(node.value) in (int,float):
+        if isinstance(node,ast.Constant) and type(node.value) in (int,float) and re.fullmatch(r"[0-9.]+",ast.get_source_segment(expr,node) or ""):
             result=Decimal(ast.get_source_segment(expr,node))
+        elif isinstance(node,ast.Name) and node.id in clean:result=clean[node.id]
         elif isinstance(node,ast.UnaryOp) and type(node.op) in (ast.UAdd,ast.USub):
             result=walk(node.operand)
             if isinstance(node.op,ast.USub):result=-result

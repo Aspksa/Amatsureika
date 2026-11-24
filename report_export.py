@@ -30,8 +30,10 @@ def xlsx(report):
     workbook=f'<workbook xmlns="{SS}" xmlns:r="{REL}"><sheets><sheet name="Отчёт" sheetId="1" r:id="rId1"/></sheets></workbook>'
     rows=[[report["title"],report["month"]],*[ [s] for s in report["summary"]],[],report["columns"],*report["rows"],[f"Показано {len(report['rows'])} из {report['total_rows']}"],[report["generated"]]]
     def cell(value,c,r):
-        # Every cell is inline text, never a formula.
-        return f'<c r="{chr(65+c)}{r}" t="inlineStr"><is><t xml:space="preserve">{safe(value)}</t></is></c>'
+        # Every cell is inline text, never a formula. Excel column names beyond Z.
+        col="";n=c+1
+        while n:n,rem=divmod(n-1,26);col=chr(65+rem)+col
+        return f'<c r="{col}{r}" t="inlineStr"><is><t xml:space="preserve">{safe(value)}</t></is></c>'
     sheet=f'<worksheet xmlns="{SS}"><cols><col min="1" max="8" width="25" customWidth="1"/></cols><sheetData>'+''.join(f'<row r="{r}">'+''.join(cell(v,c,r) for c,v in enumerate(row))+'</row>' for r,row in enumerate(rows,1))+'</sheetData></worksheet>'
     return pack({"[Content_Types].xml":content_types([("xl/workbook.xml","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"),("xl/worksheets/sheet1.xml","application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml")]),"_rels/.rels":relationship("xl/workbook.xml","officeDocument"),"xl/workbook.xml":workbook,"xl/_rels/workbook.xml.rels":relationship("worksheets/sheet1.xml","worksheet"),"xl/worksheets/sheet1.xml":sheet})
 

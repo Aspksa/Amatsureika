@@ -61,6 +61,9 @@ def build():
             say("Node.js not found; using existing frontend build.")
             return
         raise RuntimeError("Node.js not found. Install Node.js LTS, or place portable Node in runtime/node.")
+    if all(p.is_file() and p.stat().st_mtime_ns >= max(s.stat().st_mtime_ns for s in sources) for p in outputs):
+        say("Frontend build is up to date.")
+        return
     run([node, "--version"])
     if not TSC.is_file():
         say("First launch: installing the pinned TypeScript compiler (internet required).")
