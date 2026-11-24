@@ -49,3 +49,11 @@ main{height:calc(100dvh - 58px);position:relative}
 /* Anonymous radial preview: only dots, connections and circular satellite icons. */
 .satellite circle.satellite-shell{fill:#0b1c28;fill-opacity:.55;stroke:currentColor;stroke-opacity:.65;stroke-width:.85}
 #brain[data-lod=overview] .satellite .satellite-shell{display:block}
+
+/* Organic radial reference: two quiet peripheral tracks and a clear center. */
+#brain[data-mode="radial"] .depth-rings{display:none}
+#brain[data-mode="radial"] .map-halo{opacity:calc(var(--depth)*.35)}
+#brain[data-mode="radial"] .orbit{stroke-width:.75;opacity:.42}
+#brain[data-mode="radial"] .spoke{stroke-width:.55}
+#brain[data-mode="radial"] .dot:not(.hot):not(.chosen){opacity:.32}
+#brain[data-mode="radial"] .core-ring{stroke-width:1.25}

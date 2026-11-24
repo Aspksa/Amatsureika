@@ -8,7 +8,8 @@ for (const total of [1000,5000,10000]){
   assert(points.every(x=>valid(x.p)));assert.equal(collisions(points),0,`${mode}: ${total}`);
   if(mode==="hex")for(let i=0;i<21;i++)for(let j=i+1;j<21;j++)assert(distance(g.centers[i],g.centers[j])>=g.radii[i]+g.radii[j]);
   const grown=layout(counts.map((n,i)=>n+(i===0?1:0)),mode);
-  if(mode!=="hex")assert.deepEqual(g.point(0,0,false),grown.point(0,0,false));
+  if(mode==="compact")assert.deepEqual(g.point(0,0,false),grown.point(0,0,false));
+  if(mode==="radial"){assert.deepEqual(g.point(0,0,false),layout(counts,mode).point(0,0,false));assert(grown.sectors[0].span>0);}
   console.log(mode,total,"points:",points.length,"radius:",Math.round(g.radius));
  }
 }
@@ -17,3 +18,25 @@ const boxes=[{x:0,y:0,w:40,h:12},{x:20,y:0,w:40,h:12},{x:80,y:0,w:40,h:12}];
 assert.deepEqual(labelMask(boxes,1),[false,true,true]);assert(overlaps(boxes[0],boxes[1]));
 assert(!valid({x:NaN,y:0}));assert(!valid({x:Infinity,y:0}));
 console.log("Geometry stress and collision tests passed");
+
+for(const counts of [
+ [88,...Array.from({length:15},(_,i)=>24+(i*17)%67),176,41,58,75,25],
+ [1,2,3,20,200,1000,...Array(15).fill(12)],
+ [10000,...Array(20).fill(1)],
+ Array.from({length:21},(_,i)=>1+i*i)
+]){
+ const g=layout(counts,"radial"),points=[];
+ assert(g.inner>=185);assert(g.outer>=g.edge+160);assert(g.outer>=g.edge*1.78);
+ assert(Math.abs(g.sectors.reduce((s,v)=>s+v.span,0)-Math.PI*2)<1e-9);
+ assert.equal(g.orbits.length,2);
+ for(let i=0;i<counts.length;i++){
+  const s=g.sectors[i];if(i>0)assert(Math.abs(s.start-g.sectors[i-1].start-g.sectors[i-1].span)<1e-9);
+  for(let j=0;j<counts[i];j++){const p=g.point(i,j,false);assert(valid(p));assert(Math.hypot(p.x,p.y)>=g.inner-1e-6);const delta=Math.atan2(Math.sin(Math.atan2(p.y,p.x)-s.angle),Math.cos(Math.atan2(p.y,p.x)-s.angle));assert(Math.abs(delta)<s.span/2);points.push({p,r:3.5})}
+  for(let j=0;j<7+i%4;j++)points.push({p:g.point(i,j,true),r:10});
+ }
+ assert.equal(collisions(points),0,"skewed radial layout");
+ const largest=counts.indexOf(Math.max(...counts)),smallest=counts.indexOf(Math.min(...counts));
+ assert(g.sectors[largest].span>g.sectors[smallest].span);
+ const grown=layout(counts.map((n,i)=>i===smallest?n+1:n),"radial");assert(grown.sectors.every((s,i)=>s.span>0&&(i===0||s.angle>grown.sectors[i-1].angle)));
+}
+console.log("Organic radial sectors and clearance tests passed");

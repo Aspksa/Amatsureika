@@ -14,10 +14,12 @@ export function axial(index:number):[number,number]{
  return [q,r];
 }
 const axialPoint=(index:number,pitch:number):Point=>{const [q,r]=axial(index);return {x:pitch*(q+r/2),y:pitch*Math.sqrt(3)*r/2}};
-export type Layout={mode:Mode;radius:number;outer:number;centers:Point[];radii:number[];orbits:number[];point:(i:number,n:number,outer:boolean)=>Point;label:(i:number)=>Point};
+export type Sector={start:number;span:number;angle:number;columns:number;rows:number};
+export type Layout={sectors?:Sector[];inner?:number;edge?:number;mode:Mode;radius:number;outer:number;centers:Point[];radii:number[];orbits:number[];point:(i:number,n:number,outer:boolean)=>Point;label:(i:number)=>Point};
 export function layout(raw:readonly number[],mode:Mode):Layout{
  const counts=raw.map(n=>Math.floor(clamp(n,1,10000,1))),k=counts.length||1;
- const pitch=mode==="radial"?12:10,cols=7,arc=pitch*(cols+1),inner=Math.max( mode==="compact"?145:190,arc*k/TAU+15);
+ if(mode==="radial")return radialLayout(counts);
+ const pitch=10,cols=7,arc=pitch*(cols+1),inner=Math.max( mode==="compact"?145:190,arc*k/TAU+15);
  const angle=(i:number)=>-Math.PI/2+i*TAU/k;
  const max=Math.max(1,...counts),rows=Math.ceil(max/cols),edge=inner+(rows-1)*pitch;
  const outer=Math.max(edge+45, (5*24)*k/TAU+20);
@@ -34,6 +36,29 @@ export function layout(raw:readonly number[],mode:Mode):Layout{
   const r=inner+Math.floor(n/cols)*pitch;return polar(r,angle(i)+(n%cols-3)*pitch/r);
  }
  return {mode,radius,outer,centers,radii,orbits:mode==="hex"?[spacing/2,spacing,spacing*2]:[inner-22,inner,edge+22,outer,outer+30],point,label:i=>mode==="hex"?{x:centers[i].x,y:centers[i].y-radii[i]-13}:polar(outer+65,angle(i))};
+}
+/** Data-weighted, disjoint angular sectors. The reserved arc length at the
+ * smallest radius bounds node spacing on every subsequent row. */
+function radialLayout(counts:readonly number[]):Layout{
+ const pitch=10, iconPitch=24, columns=counts.map(n=>Math.max(2,Math.min(24,Math.ceil(Math.sqrt(n*.65)))));
+ const weights=columns.map(c=>c+2.5),sum=weights.reduce((a,b)=>a+b,0)||1;
+ // Minimum arc clearance; increase radius rather than compressing dense sectors.
+ const inner=Math.max(185,pitch*sum/TAU+12);
+ let cursor=-Math.PI/2;
+ const sectors=columns.map((c,i)=>{const span=TAU*weights[i]/sum,start=cursor;cursor+=span;return{start,span,angle:start+span/2,columns:c,rows:Math.ceil(counts[i]/c)}});
+ const edge=inner+Math.max(0,...sectors.map(s=>s.rows-1))*pitch;
+ // A generous empty annulus, with enough room even for the narrowest group.
+ const outer=Math.max(edge*1.78,edge+160,...sectors.map(s=>130/s.span));
+ const radius=outer+65;
+ const centers=sectors.map(s=>polar(inner+(s.rows-1)*pitch/2,s.angle));
+ const radii=sectors.map(s=>Math.max(35,Math.hypot((s.columns-1)*pitch,(s.rows-1)*pitch)/2+12));
+ function point(i:number,n:number,satellite:boolean):Point{
+  const s=sectors[i];
+  if(satellite){const r=outer+Math.floor(n/5)*30;return polar(r,s.angle+(n%5-2)*iconPitch/r)}
+  const row=Math.floor(n/s.columns),r=inner+row*pitch;
+  return polar(r,s.angle+(n%s.columns-(s.columns-1)/2)*pitch/r);
+ }
+ return{mode:"radial",radius,outer,inner,edge,sectors,centers,radii,orbits:[outer,outer+52],point,label:i=>polar(outer+55,sectors[i].angle)};
 }
 export type Box={x:number;y:number;w:number;h:number};
 export const overlaps=(a:Box,b:Box)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
