@@ -100,7 +100,7 @@ class Cloud:
             if not self.key or not self.verified or self.model not in self.models:
                 raise CloudError("Сначала загрузите и подключите модель")
             key, model = self.key, self.model
-        result = self.transport("POST","/chat/completions",key,{"model":model,"messages":[{"role":"user","content":text}],"max_completion_tokens":512,"stream":False})
+        result = self.transport("POST","/chat/completions",key,{"model":model,"messages":[{"role":"user","content":text}],"max_tokens":512,"stream":False})
         try:
             answer = result["choices"][0]["message"]["content"]
             if not isinstance(answer,str) or not answer.strip() or len(answer)>100000:

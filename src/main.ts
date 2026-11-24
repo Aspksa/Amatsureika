@@ -1,10 +1,10 @@
 import {ClusterIndex, curvedPoint, directedBlockLayout, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
-const NS="http://www.w3.org/5000/svg";
+const NS="http://www.w3.org/2000/svg";
 const byId=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const svg=document.getElementById("brain") as unknown as SVGSVGElement;
 const group=(id:string)=>document.getElementById(id) as unknown as SVGGElement;
 const world=group("world"), nodes=group("nodes"), links=group("links"), cells=group("cells"), labels=group("labels"), orbits=group("orbits");
-function el<K extends keyof SVGElementTagNameMap>(tag:K, attrs:Record<string,string|number>={}, parent?:Element):SVGElementTagNameMap[K]{const e=document.createElementNS("http://www.w3.org/2000/svg",tag) as SVGElementTagNameMap[K];for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));parent?.append(e);return e}
+function el<K extends keyof SVGElementTagNameMap>(tag:K, attrs:Record<string,string|number>={}, parent?:Element):SVGElementTagNameMap[K]{const e=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));parent?.append(e);return e}
 const names:string[]=[];
 const palette=["#77d9c7","#93b8ee","#9aa7f0","#c3a6e9","#8cdbb2","#e0ba88","#a8c8d9"];
 type Item={e:SVGElement;cluster:number;index:number;outer:boolean;from:Point;to:Point;now:Point};

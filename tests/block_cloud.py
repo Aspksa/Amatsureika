@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as directory:
         calls.append((method,endpoint))
         assert key=="test-key"
         if endpoint=="/models": return {"data":[{"id":"mock-chat"}]}
-        assert payload["max_completion_tokens"]==512
+        assert payload["max_tokens"]==512
         return {"choices":[{"message":{"content":"mock answer"}}]}
     c=Cloud(path,fake)
     c.save_key({"key":"test-key","persist":False})
