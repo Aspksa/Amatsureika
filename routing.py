@@ -82,7 +82,7 @@ class Router:
         self.knowledge=Knowledge(chat,cloud)
         self.cognitive=CognitiveTools(workspace,self.knowledge,self.agent,extract)
         self.lock=threading.RLock()
-        self.plans=OrderedDict()
+        self.plans=OrderedDict();self.next_index=0;self.agent.index_refresh=self.background_index
         self.fts=True
         try:
             with closing(chat.connect()) as db, db:
@@ -143,6 +143,26 @@ class Router:
             result.append(("file",r["id"],r["name"],"",r["updated"],r["updated"]+"|"+str(stat.st_mtime_ns),path))
         return result
 
+    def refresh_index(self,db,sources):
+        metadata={(source,i) for source,i,*_ in sources}
+        versions={(r[0],r[1]):r[2] for r in db.execute("SELECT * FROM routing_workspace_versions")}
+        for source,i,title,body,stamp,version,path in sources:
+            if versions.get((source,i))==version: continue
+            if path is not None: body=extract(path,title)
+            db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
+            db.execute("INSERT INTO routing_workspace_fts(source,item_id,title,body) VALUES(?,?,?,?)",(source,i,title,body))
+            db.execute("INSERT OR REPLACE INTO routing_workspace_versions VALUES(?,?,?)",(source,i,version))
+        for source,i in versions.keys()-metadata.keys():
+            db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
+            db.execute("DELETE FROM routing_workspace_versions WHERE source=? AND item_id=?",(source,i))
+
+    def background_index(self):
+        if not self.fts or time.monotonic()<self.next_index:return
+        self.next_index=time.monotonic()+120
+        with closing(self.chat.connect()) as db,db:
+            db.execute("BEGIN IMMEDIATE")
+            self.refresh_index(db,self.sources(db))
+
     def search(self,q,scope="all"):
         terms=tokens(q)
         if not terms: return []
@@ -154,16 +174,7 @@ class Router:
             sources=self.sources(db)
             metadata={(source,i):(title,stamp) for source,i,title,body,stamp,version,path in sources}
             if self.fts:
-                versions={(r[0],r[1]):r[2] for r in db.execute("SELECT * FROM routing_workspace_versions")}
-                for source,i,title,body,stamp,version,path in sources:
-                    if versions.get((source,i))==version: continue
-                    if path is not None: body=extract(path,title)
-                    db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
-                    db.execute("INSERT INTO routing_workspace_fts(source,item_id,title,body) VALUES(?,?,?,?)",(source,i,title,body))
-                    db.execute("INSERT OR REPLACE INTO routing_workspace_versions VALUES(?,?,?)",(source,i,version))
-                for source,i in versions.keys()-metadata.keys():
-                    db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
-                    db.execute("DELETE FROM routing_workspace_versions WHERE source=? AND item_id=?",(source,i))
+                self.refresh_index(db,sources)
                 chatrows=db.execute("""SELECT m.* FROM routing_chat_fts JOIN chat_messages m ON m.id=routing_chat_fts.rowid
                     WHERE routing_chat_fts MATCH ? ORDER BY bm25(routing_chat_fts),m.id DESC LIMIT 60""",(match,)).fetchall()
                 for r in db.execute("SELECT source,item_id,title,body FROM routing_workspace_fts WHERE routing_workspace_fts MATCH ? ORDER BY bm25(routing_workspace_fts) LIMIT 60",(match,)):

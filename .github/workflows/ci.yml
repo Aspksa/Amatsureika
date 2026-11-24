@@ -45,6 +45,7 @@ jobs:
       - run: python tests/cognitive_tools_smoke.py
       - run: python tests/chat_intelligence_smoke.py
       - run: python tests/chat_evolution_smoke.py
+      - run: python tests/revolution_automation_smoke.py
       - name: Upload startup log
         if: always()
         uses: actions/upload-artifact@v4
