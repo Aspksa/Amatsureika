@@ -119,6 +119,26 @@ class Cloud:
         except (KeyError,IndexError,TypeError,ValueError):
             raise CloudError("Модель не вернула текстовый ответ") from None
 
+    def embed(self,text,model="Qwen/Qwen3-Embedding-0.6B"):
+        # Explicit single-input operation. Caller must bind consent to exact text.
+        if model!="Qwen/Qwen3-Embedding-0.6B" or not isinstance(text,str) or not 1<=len(text)<=3000:
+            raise ValueError("Некорректный запрос embeddings")
+        with self.lock:
+            if not self.key or not self.verified or model not in self.models:
+                raise CloudError("Загрузите каталог Cloud.ru с моделью Qwen/Qwen3-Embedding-0.6B")
+            key=self.key
+        result=self.transport("POST","/embeddings",key,{"model":model,"input":text,"encoding_format":"float"})
+        try:
+            import math
+            vec=result["data"][0]["embedding"]
+            if not isinstance(vec,list) or len(vec)!=1024 or any(type(x) not in (float,int) or not math.isfinite(x) for x in vec):
+                raise ValueError()
+            norm=math.sqrt(sum(x*x for x in vec))
+            if not math.isfinite(norm) or norm<=0:raise ValueError()
+            return [x/norm for x in vec]
+        except (KeyError,IndexError,TypeError,ValueError,OverflowError):
+            raise CloudError("Некорректный вектор embeddings") from None
+
     def http_stream(self,key,payload):
         req=Request(BASE+"/chat/completions",data=json.dumps(payload).encode("utf-8"),
                     headers={"Authorization":"Bearer "+key,"Content-Type":"application/json","Accept":"text/event-stream"},method="POST")

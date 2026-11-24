@@ -1,5 +1,6 @@
 """Structured knowledge over the existing SQLite and chronological chat, not a second chat store."""
 import hashlib
+import math
 import json
 import re
 import threading
@@ -21,8 +22,8 @@ def fingerprint(kind,subject,predicate,value):
     return hashlib.sha256(json.dumps([kind,*map(norm,(subject,predicate,value))],ensure_ascii=False).encode()).hexdigest()
 
 class Knowledge:
-    def __init__(self,chat):
-        self.chat=chat;self.stop=threading.Event();self.worker=None
+    def __init__(self,chat,cloud=None):
+        self.cloud=cloud;self.chat=chat;self.stop=threading.Event();self.worker=None
         with closing(chat.connect()) as db,db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS knowledge_items(
@@ -34,6 +35,7 @@ class Knowledge:
                     added TEXT NOT NULL,PRIMARY KEY(item_id,source_type,source_id));
                 CREATE TABLE IF NOT EXISTS knowledge_versions(id INTEGER PRIMARY KEY,item_id TEXT NOT NULL REFERENCES knowledge_items(id),snapshot TEXT NOT NULL,created TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS knowledge_links(a TEXT NOT NULL REFERENCES knowledge_items(id),b TEXT NOT NULL REFERENCES knowledge_items(id),kind TEXT NOT NULL,strength INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL,PRIMARY KEY(a,b,kind));
+                CREATE TABLE IF NOT EXISTS knowledge_vectors(item_id TEXT PRIMARY KEY REFERENCES knowledge_items(id),model TEXT NOT NULL,digest TEXT NOT NULL,vector TEXT NOT NULL,created TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS knowledge_cursor(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS knowledge_lookup ON knowledge_items(kind,state,subject,predicate);
             """)
@@ -114,7 +116,7 @@ class Knowledge:
             rows=db.execute("SELECT kind,state,COUNT(*) n FROM knowledge_items GROUP BY kind,state").fetchall()
             return {"counts":[dict(r) for r in rows],"stale":db.execute("SELECT COUNT(*) FROM knowledge_items WHERE expires!='' AND expires<?",(date.today().isoformat(),)).fetchone()[0],"links":db.execute("SELECT COUNT(*) FROM knowledge_links").fetchone()[0],"versions":db.execute("SELECT COUNT(*) FROM knowledge_versions").fetchone()[0]}
     def context(self,q):
-        rows=self.search(q,True)[:4]
+        rows=self.search(q[:500],True)[:4]
         return [f"[Подтверждено пользователем; знание {r['id']}; уверенность пользователя {r['confidence']}; дата {r['updated'][:10]}] {r['subject']} / {r['predicate']}: {r['value'][:500]}" for r in rows]
     def history(self,i):
         with closing(self.chat.connect()) as db:
@@ -126,6 +128,45 @@ class Knowledge:
                 try:self.consolidate()
                 except Exception:pass
         self.worker=threading.Thread(target=loop,daemon=True);self.worker.start()
+    def embedding_preview(self,i):
+        if not isinstance(i,str):raise ValueError("Некорректный ID")
+        with closing(self.chat.connect()) as db:
+            r=db.execute("SELECT * FROM knowledge_items WHERE id=? AND state='confirmed'",(i,)).fetchone()
+            if not r:raise ValueError("Можно индексировать только подтверждённое знание")
+            text=r["subject"]+" / "+r["predicate"]+": "+r["value"]
+            digest=hashlib.sha256(text.encode()).hexdigest()
+            cached=db.execute("SELECT 1 FROM knowledge_vectors WHERE item_id=? AND digest=? AND model=?",(i,digest,"Qwen/Qwen3-Embedding-0.6B")).fetchone()
+        return {"id":i,"text":text,"model":"Qwen/Qwen3-Embedding-0.6B","cached":bool(cached)}
+    def embed_item(self,i,text):
+        preview=self.embedding_preview(i)
+        if text!=preview["text"]:raise ValueError("Текст изменился. Повторите подтверждение.")
+        if preview["cached"]:return {"cached":True}
+        if not self.cloud:raise ValueError("Cloud.ru недоступен")
+        digest=hashlib.sha256(text.encode()).hexdigest()
+        with self.cloud.send_lock:
+            # Recheck after waiting for other paid operations.
+            current=self.embedding_preview(i)
+            if current["text"]!=text:raise ValueError("Текст изменился")
+            if current["cached"]:return {"cached":True}
+            vec=self.cloud.embed(text)
+            with closing(self.chat.connect()) as db,db:
+                db.execute("INSERT OR REPLACE INTO knowledge_vectors VALUES(?,?,?,?,?)",(i,preview["model"],digest,json.dumps(vec),utc()))
+        return {"cached":False}
+    def semantic(self,q):
+        q=short(q,500)
+        if not self.cloud:raise ValueError("Cloud.ru недоступен")
+        with closing(self.chat.connect()) as db:
+            rows=db.execute("SELECT k.*,v.vector FROM knowledge_items k JOIN knowledge_vectors v ON v.item_id=k.id WHERE k.state='confirmed' AND v.model=? AND (k.expires='' OR k.expires>=?) ORDER BY k.updated DESC LIMIT 1500",("Qwen/Qwen3-Embedding-0.6B",date.today().isoformat())).fetchall()
+        if not rows:return []
+        with self.cloud.send_lock:query=self.cloud.embed(q)
+        result=[]
+        for row in rows:
+            r=dict(row);vector=json.loads(r.pop("vector"))
+            if len(vector)!=len(query):continue
+            r["semantic_score"]=sum(a*b for a,b in zip(query,vector))
+            result.append(r)
+        result.sort(key=lambda r:r["semantic_score"],reverse=True)
+        return result[:15]
     def dispatch(self,v):
         if not isinstance(v,dict):raise ValueError("Некорректное действие")
         a=v.get("action")
@@ -136,5 +177,8 @@ class Knowledge:
         if a=="search" and set(rest)=={"query"}:return {"items":self.search(rest["query"])}
         if a=="stats" and not rest:return self.stats()
         if a=="consolidate" and not rest:return self.consolidate()
+        if a=="embedding_preview" and set(rest)=={"id"}:return self.embedding_preview(rest["id"])
+        if a=="embed" and set(rest)=={"id","text","confirm"} and rest["confirm"] is True:return self.embed_item(rest["id"],rest["text"])
+        if a=="semantic" and set(rest)=={"query","confirm"} and rest["confirm"] is True:return {"items":self.semantic(rest["query"])}
         if a=="history" and set(rest)=={"id"} and isinstance(rest["id"],str):return self.history(rest["id"])
         raise ValueError("Неизвестное действие памяти")

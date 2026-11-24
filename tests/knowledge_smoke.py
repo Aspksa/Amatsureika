@@ -6,6 +6,7 @@ from chat_store import ChatStore
 from workspace import Workspace
 from cloud_client import Cloud
 from routing import Router
+from unittest.mock import patch
 with tempfile.TemporaryDirectory() as d:
     p=Path(d)/"db.sqlite";c=ChatStore(p);w=Workspace(p);r=Router(c,w,Cloud(p));k=r.knowledge
     c.memory_append({"text":"Автомобиль тестовый","request_id":str(uuid4())},"Ответ")
@@ -25,5 +26,13 @@ with tempfile.TemporaryDirectory() as d:
     assert k.history(i)["items"]
     k.review({"id":i,"state":"rejected","confidence":0,"confirm":True})
     assert not k.context("синий")
+    z=k.add({**v,"subject":"Двигатель","value":"белый"})["id"]
+    k.review({"id":z,"state":"confirmed","confidence":1,"confirm":True})
+    p=k.embedding_preview(z)
+    with patch.object(r.cloud,"embed",return_value=[1.0]+[0.0]*1023) as mock:
+        assert not k.embed_item(z,p["text"])["cached"]
+        assert k.embed_item(z,p["text"])["cached"]
+        assert k.semantic("цвет")[0]["id"]==z
+        assert mock.call_count==2
     assert c.health()["ok"]
 print("Knowledge provenance, deduplication, quarantine, confirmation, conflicts and history passed")

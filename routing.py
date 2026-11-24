@@ -75,7 +75,7 @@ class Router:
         self.agent=Agent(chat,workspace,self.tools,self.advanced)
         self.importer=Importer(workspace)
         self.web=WebResearch(chat,workspace)
-        self.knowledge=Knowledge(chat)
+        self.knowledge=Knowledge(chat,cloud)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
