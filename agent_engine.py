@@ -90,16 +90,23 @@ class Agent:
         if not isinstance(steps,list) or not 1<=len(steps)<=12:raise ValueError("От 1 до 12 шагов")
         seen=set();clean=[]
         for s in steps:
-            if not isinstance(s,dict) or set(s)!={"id","tool","month","depends"}:raise ValueError("Некорректный шаг")
+            if not isinstance(s,dict) or set(s) not in ({"id","tool","month","depends"},{"id","tool","month","depends","condition"}):raise ValueError("Некорректный шаг")
             i,k,m,d=s["id"],s["tool"],s["month"],s["depends"]
             if not isinstance(i,str) or not re.fullmatch(r"[a-z0-9_]{1,24}",i) or i in seen or not isinstance(k,str) or k not in READ:raise ValueError("Инструмент не разрешён")
             if not isinstance(d,list) or any(not isinstance(x,str) or x not in seen for x in d) or len(set(d))!=len(d):raise ValueError("Зависимости только от предыдущих шагов")
             if k=="summary" and not d:raise ValueError("Сводке нужны источники")
-            if k!="summary" and d:raise ValueError("Этот инструмент не принимает входы других шагов")
+            condition=s.get("condition","all_ok")
+            if condition not in ("all_ok","any_error","always") or condition!="all_ok" and not d:raise ValueError("Некорректное условие")
+            if k=="summary" and condition!="all_ok":raise ValueError("Сводка требует успешных источников")
             if READ[k]["month"]:month_ok(m)
             elif m!="":raise ValueError("Месяц не применяется")
             seen.add(i);clean.append(dict(s))
         return clean
+
+    def preview(self,steps):
+        steps=self.validate(steps);depth={}
+        for s in steps:depth[s["id"]]=1+max((depth[i] for i in s["depends"]),default=-1)
+        return {"steps":steps,"layers":[[s["id"] for s in steps if depth[s["id"]]==i] for i in range(max(depth.values())+1)],"permission":"read_local","note":"Структурная проверка без запуска; результаты и длительность неизвестны."}
 
     def log(self,tool,status,begin,detail):
         with closing(self.chat.connect()) as db,db:
@@ -128,10 +135,13 @@ class Agent:
             totals={}
             for r in fuel:
                 f=r["fields"];totals[f["vehicle"]]=totals.get(f["vehicle"],Decimal(0))+Decimal(str(f["liters"]))
-            lines=[]
+            lines=[];missing=0;rate_rows=[]
             for v,l in totals.items():
                 plate=byid.get(v,{}).get("fields",{}).get("plate","#"+str(v))
-                lines.append(f"{plate}: {l} л; "+(f"{(l*100/km[v]):.2f} л/100 км" if km.get(v,0)>0 else "нет пробега"))
+                rate=round(l*100/km[v],2) if km.get(v,0)>0 else None
+                if rate is None:missing+=1
+                rate_rows.append([plate,str(l),str(km.get(v,0)),str(rate) if rate is not None else "нет пробега"])
+                lines.append(f"{plate}: {l} л; "+(f"{rate} л/100 км" if rate is not None else "нет пробега"))
             text=f"Оценка по заправкам за {month} (не фактическое сгорание):\n"+"\n".join(lines[:50])
         else:
             months=[month_shift(month,-i) for i in (3,2,1)]
@@ -143,7 +153,7 @@ class Agent:
             sources=[{"source":"work","id":r["id"],"title":"ГСМ"} for r in active if r["kind"]=="fuel" and r["fields"]["date"][:7] in months][:8]
             if not all(counts.values()):text="Недостаточно истории: нужны операции во всех трёх предыдущих месяцах."
             else:text="Прогноз расходов на "+month+": "+str(round(sum(sums.values())/3,2))+" ₽. Простое среднее трёх месяцев, без оценки сезонности.\n"+"\n".join(f"{m}: {sums[m]} ₽" for m in months)
-        return {"text":text,"sources":sources}
+        return {"text":text,"sources":sources,**({"table":{"columns":["Автомобиль","Заправлено, л","Пробег, км","Оценка л/100 км"],"rows":rate_rows[:50],"total_rows":len(rate_rows)},"incomplete":bool(missing or not rate_rows)} if kind=="fuel_rate" else {})}
 
     def one(self,s,results):
         k=s["tool"];begin=time.monotonic()
@@ -158,7 +168,7 @@ class Agent:
                 answer={"text":"\n".join(results[i]["text"] for i in s["depends"])[:8000],"sources":[h for i in s["depends"] for h in results[i]["sources"]][:8]}
             else:answer=self.metric(k,s["month"])
             self.log(k,"ok",begin,"Проверена структура")
-            return {**answer,"status":"ok"}
+            return {**answer,"status":"partial" if answer.get("incomplete") else "ok","duration_ms":int((time.monotonic()-begin)*1000)}
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as e:
             self.log(k,"error",begin,type(e).__name__)
             # Only equivalent safe read-only fallback for inventory. Never retry
@@ -179,8 +189,11 @@ class Agent:
                 batch=[s for s in pending if all(i in results for i in s["depends"])]
                 futures={}
                 for s in batch:
-                    if any(results[i]["status"]!="ok" for i in s["depends"]):
-                        results[s["id"]]={"text":"Пропущено: зависимость не выполнена","status":"skipped","sources":[]}
+                    condition=s.get("condition","all_ok")
+                    deps=[results[i]["status"] for i in s["depends"]]
+                    allowed=condition=="always" or condition=="any_error" and any(x in ("error","partial") for x in deps) or condition=="all_ok" and all(x=="ok" for x in deps)
+                    if not allowed:
+                        results[s["id"]]={"text":"Пропущено: условие не выполнено","status":"skipped","sources":[],"expected_skip":condition=="any_error" and all(x=="ok" for x in deps)}
                     else:
                         if progress:progress({"id":s["id"],"tool":s["tool"],"status":"scheduled"})
                         futures[pool.submit(self.one,s,{i:results[i] for i in s["depends"]})]=s
@@ -191,7 +204,7 @@ class Agent:
                     for s in batch:
                         if results[s["id"]]["status"]=="skipped":progress({"id":s["id"],"tool":s["tool"],"status":"skipped"})
                 pending=[s for s in pending if s not in batch]
-        return {"steps":[{"id":s["id"],"tool":s["tool"],**results[s["id"]]} for s in steps],"ok":all(v["status"]=="ok" for v in results.values()),"snapshot":"Отдельные снимки SQLite; не единая транзакция"}
+        return {"steps":[{"id":s["id"],"tool":s["tool"],"depends":s["depends"],**results[s["id"]]} for s in steps],"ok":all(v["status"]=="ok" or v.get("expected_skip") for v in results.values()),"completeness":{status:sum(v["status"]==status for v in results.values()) for status in ("ok","partial","error","skipped")},"snapshot":"Отдельные снимки SQLite; не единая транзакция"}
 
     def save_scenario(self,v):
         if not isinstance(v,dict) or set(v)!={"name","steps"} or not isinstance(v["name"],str) or not 1<=len(v["name"].strip())<=80:raise ValueError("Название сценария")
@@ -238,6 +251,7 @@ class Agent:
             if not isinstance(v["id"],str):raise ValueError("ID правила")
             with closing(self.chat.connect()) as db,db:
                 db.execute("UPDATE agent_rules SET enabled=0,status='disabled' WHERE id=?",(v["id"],))
+                db.execute("UPDATE agent_jobs SET status='cancelled' WHERE status='queued' AND id IN (SELECT job_id FROM agent_rule_jobs WHERE rule_id=?)",(v["id"],))
             return {"rules":self.rules()}
         if action=="cancel" and set(v)=={"action","id","confirm"}:
             if not isinstance(v["id"],str):raise ValueError("ID задачи")
@@ -246,7 +260,7 @@ class Agent:
             return {"ok":True}
         if action!="add" or set(v)!={"action","scenario","mode","minutes","file","current_month","draft","confirm"}:raise ValueError("Неизвестное действие")
         mode=v["mode"];minutes=v["minutes"];file=v["file"]
-        if mode not in ("interval","file") or type(minutes) is not int or not 60<=minutes<=10080 or type(v["current_month"]) is not bool or type(v["draft"]) is not bool or not isinstance(v["scenario"],str):raise ValueError("Интервал 60–10080 минут")
+        if mode not in ("interval","file","new_files") or type(minutes) is not int or not 60<=minutes<=10080 or type(v["current_month"]) is not bool or type(v["draft"]) is not bool or not isinstance(v["scenario"],str):raise ValueError("Интервал 60–10080 минут")
         steps=self.validate(self.scenario(v["scenario"]))
         version=""
         if mode=="file":
@@ -254,6 +268,8 @@ class Agent:
             version=self.file_version(file)
             if not version:raise ValueError("Файл недоступен")
         elif file is not None:raise ValueError("Файл нужен только для наблюдения")
+        if mode=="new_files":
+            with closing(self.chat.connect()) as db:version=str(db.execute("SELECT COALESCE(MAX(id),0) FROM disk_entries").fetchone()[0])
         i=uuid4().hex
         with closing(self.chat.connect()) as db,db:
             db.execute("BEGIN IMMEDIATE")
@@ -272,6 +288,10 @@ class Agent:
             if not current:return False
             def status(s,delay=None):
                 db.execute("UPDATE agent_rules SET next_check=?,status=? WHERE id=?",(now+(delay or row["interval_seconds"]),s,row["id"]))
+            if row["mode"]=="new_files":
+                new=db.execute("SELECT COALESCE(MAX(id),0) FROM disk_entries WHERE kind='file' AND trashed=0 AND id>?",(int(row["file_version"] or 0),)).fetchone()[0]
+                if not new:status("unchanged");return True
+                version=str(new)
             if row["mode"]=="file":
                 if not version:status("file_unavailable");return True
                 if version==row["file_version"]:status("unchanged");return True
@@ -325,7 +345,7 @@ class Agent:
 
     def state(self):
         with closing(self.chat.connect()) as db:
-            return {"rules":self.rules(),"registry":registry(),"scenarios":[dict(r) for r in db.execute("SELECT id,name,created FROM agent_scenarios ORDER BY created DESC")],"jobs":[{**dict(r),"result":json.loads(r["result"]) if r["result"] else None} for r in db.execute("SELECT id,status,due,result,created FROM agent_jobs ORDER BY created DESC LIMIT 30")],"runs":[dict(r) for r in db.execute("SELECT tool,status,duration_ms,detail,created FROM agent_runs ORDER BY created DESC LIMIT 100")]}
+            return {"rules":self.rules(),"registry":registry(),"scenarios":[dict(r) for r in db.execute("SELECT id,name,created FROM agent_scenarios ORDER BY created DESC")],"jobs":[{**dict(r),"result":json.loads(r["result"]) if r["result"] else None} for r in db.execute("SELECT id,status,due,result,created FROM agent_jobs ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,due DESC LIMIT 100")],"runs":[dict(r) for r in db.execute("SELECT tool,status,duration_ms,detail,created FROM agent_runs ORDER BY created DESC LIMIT 100")]}
 
     def mileage(self,v):
         if not isinstance(v,dict) or set(v)!={"vehicle","month","km"} or type(v["vehicle"]) is not int or type(v["km"]) not in (int,float) or not 0<v["km"]<=1000000:raise ValueError("Некорректный пробег")

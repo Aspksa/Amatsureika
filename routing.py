@@ -278,7 +278,7 @@ class Router:
                 data=self.advanced.anomalies();advanced_answer=anomaly_text(data)
                 advanced_sources=[{"source":"work","id":i,"title":a["text"]} for a in data["issues"] for i in a["ids"]]
             elif action=="compare":
-                data=self.advanced.compare(*args);advanced_answer=compare_text(data)
+                data=self.advanced.compare(*args);advanced_answer=compare_text(data);meta["diff"]={"text":data["diff"],"truncated":data["truncated"]}
                 advanced_sources=[{"source":"file","id":f["id"],"title":f["name"]} for f in data["files"]]
             else:
                 mutation=self.advanced.preview(*args)
@@ -301,7 +301,9 @@ class Router:
                             else:
                                 result=self.cognitive.dispatch({"action":"compare","a":a,"b":b,"key":key_match[1].strip()})
                                 parts.append(f"#{a} / #{b}: "+json.dumps(result,ensure_ascii=False)[:4000])
-                        else:parts.append(compare_text(self.advanced.compare(a,b)))
+                        else:
+                            diff=self.advanced.compare(a,b);parts.append(compare_text(diff))
+                            if "diff" not in meta:meta["diff"]={"text":diff["diff"],"truncated":diff["truncated"]}
                     except ValueError as e:parts.append(f"#{a} / #{b}: {e}")
                 advanced_answer="Сравнение вложений:\n"+"\n\n".join(parts)[:12000]
                 meta["tools"].append("compare")
@@ -342,7 +344,9 @@ class Router:
         if agent_steps and advanced_answer is None:
             run=self.agent.run(agent_steps,progress=progress)
             if not run['ok']:meta['warnings'].append('Не все шаги выполнены; результат неполный.')
-            meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{"tool":s["tool"],"status":s["status"]} for s in run["steps"]]
+            meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{k:s[k] for k in ("id","tool","status","depends","duration_ms") if k in s} for s in run["steps"]]
+            meta["completeness"]=run["completeness"]
+            if len(run["steps"])==1 and "table" in run["steps"][0]:meta["table"]=run["steps"][0]["table"]
             if run["ok"]:meta["verified_steps"]=agent_steps
             advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
             advanced_sources=[h for s in run["steps"] for h in s["sources"]]
