@@ -74,3 +74,23 @@ export function collisions(points:readonly {p:Point;r:number}[]):number{
  for(const item of points){const x=Math.floor(item.p.x/step),y=Math.floor(item.p.y/step);for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)for(const other of buckets.get((x+dx)+":"+(y+dy))||[])if(distance(item.p,other.p)+1e-6<item.r+other.r)count++;const key=x+":"+y;const bucket=buckets.get(key)||[];bucket.push(item);buckets.set(key,bucket)}
  return count;
 }
+
+/** Stable adjacent slots for chronological conversation segments.
+ * New clusters do not relocate previously saved messages. */
+export function conversationLayout(raw:readonly number[],mode:Mode):Layout{
+ const counts=raw.map(n=>Math.floor(clamp(n,0,200,0))),pitch=10,slots=12;
+ const ring=(i:number)=>Math.floor(i/slots);
+ const angle=(i:number)=>-Math.PI/2+(ring(i)%2===0?i%slots:slots-1-i%slots)*TAU/slots;
+ const base=(i:number)=>260+ring(i)*310;
+ const centers=counts.map((_,i)=>mode==="hex"?axialPoint(i+1,390):polar(base(i)+75,angle(i)));
+ const radii=counts.map(()=>mode==="hex"?150:105);
+ const radius=mode==="hex"?Math.max(360,...centers.map(p=>Math.hypot(p.x,p.y)+190)):Math.max(570,...counts.map((_,i)=>base(i)+270));
+ const outer=radius-35;
+ function point(i:number,n:number,satellite:boolean):Point{
+  if(mode==="hex"){const c=centers[i],p=satellite?{x:0,y:-142}:axialPoint(n,pitch);return{x:c.x+p.x,y:c.y+p.y}}
+  const r=satellite?base(i)+215:base(i)+Math.floor(n/12)*pitch;
+  return polar(r,angle(i)+(satellite?0:(n%12-5.5)*pitch/r));
+ }
+ const orbits=mode==="hex"?[outer]:[outer,outer+22];
+ return{mode,radius,outer,centers,radii,orbits,point,label:i=>centers[i]};
+}
