@@ -22,13 +22,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if urlsplit(self.path).path == "/api/design":
+        if urlsplit(self.path).path == "/api/camera":
+            self.send_json(self.store.load_camera())
+        elif urlsplit(self.path).path == "/api/design":
             self.send_json(self.store.load())
         else:
             super().do_GET()
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/api/design":
+        path = urlsplit(self.path).path
+        if path not in ("/api/design", "/api/camera"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -40,7 +43,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0 < size <= 4096:
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
-            self.send_json(self.store.save(value))
+            self.send_json(self.store.save_camera(value) if path == "/api/camera" else self.store.save(value))
         except (ValueError, TypeError, OverflowError):
             self.send_json({"error": "Invalid settings"}, 400)
 
@@ -50,7 +53,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent / "public"
-    if not (root / "main.js").is_file():
+    if not all((root / name).is_file() for name in ("main.js", "geometry.js")):
         raise SystemExit("Build the frontend first: npm run build")
     with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=DesignStore(args.data_dir / "amatsureika.db"))) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
