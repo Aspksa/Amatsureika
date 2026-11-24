@@ -245,3 +245,9 @@ body.full-map #panel{display:none!important}
 .edit-diff{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .edit-diff>div{padding:12px;border:1px solid #29434f;border-radius:8px;min-width:0}
 .edit-diff p{white-space:pre-wrap;overflow-wrap:anywhere;color:#c6e2df}
+
+#agentDialog,#attachDialog{width:min(760px,calc(100% - 28px))}
+#agentDialog pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#b2cbd3;max-height:40dvh;overflow:auto}
+#agentJobs{display:flex;gap:6px;flex-wrap:wrap}
+#attachList,#agentTools{width:100%;min-height:110px}
+#reportOutput tr[hidden]{display:none}

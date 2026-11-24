@@ -443,7 +443,7 @@ function approveEdit(m:EditPreview):Promise<boolean>{
  return new Promise(resolve=>{dialog.returnValue="cancel";dialog.addEventListener("close",()=>resolve(dialog.returnValue==="apply"),{once:true});dialog.showModal()});
 }
 form.onsubmit=async e=>{
- e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||!ready||selected>=0)return;
+ e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||attaching||!ready||selected>=0)return;
  const paid=cloudAvailable&&!localOnly;
  busy=true;preparing=true;cancelPreparation=false;updateToolState();sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Поиск в локальной памяти…";
  if(!pending||pending.text!==raw)pending={text:raw,request_id:crypto.randomUUID()};
@@ -567,7 +567,7 @@ function updateToolState(){
  const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
  byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
  byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
- for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow"])byId<HTMLButtonElement>(id).disabled=busy;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
 byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
@@ -610,6 +610,62 @@ byId<HTMLFormElement>("chatSearchForm").onsubmit=async e=>{
   }
  }catch(e){if(run===searchRun)results.textContent=e instanceof Error?e.message:"Ошибка поиска"}
 };
+type AgentStep={id:string;tool:string;month:string;depends:string[]};
+type AgentRegistry={id:string;title:string;permission:string;month:boolean};
+type AgentResult={steps:{id:string;tool:string;text:string;status:string}[];ok:boolean;snapshot:string};
+type AgentState={registry:AgentRegistry[];scenarios:{id:string;name:string;created:string}[];jobs:{id:string;status:string;due:string;result:AgentResult|null}[];runs:{tool:string;status:string;duration_ms:number;detail:string;created:string}[]};
+const agentDialog=byId<HTMLDialogElement>("agentDialog"),agentOutput=byId("agentOutput"),agentTools=byId<HTMLSelectElement>("agentTools"),agentMonth=byId<HTMLInputElement>("agentMonth"),agentScenarios=byId<HTMLSelectElement>("agentScenarios");
+let agentState:AgentState|null=null,agentBusy=false,agentSteps:AgentStep[]=[];
+async function agentApi<T>(path:string,value:object):Promise<T>{const r=await fetch("/api/agent/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка инструмента");return data as T}
+function showAgentResult(r:AgentResult){agentOutput.textContent=r.steps.map(s=>s.tool+" · "+s.status+"\n"+s.text).join("\n\n")+"\n"+r.snapshot}
+async function refreshAgent(){
+ const state=await agentApi<AgentState>("state",{});agentState=state;
+ const selectedTools=new Set(Array.from(agentTools.selectedOptions).map(o=>o.value)),selectedScenario=agentScenarios.value;agentTools.replaceChildren();agentScenarios.replaceChildren();
+ for(const t of state.registry.filter(t=>t.permission==="read_local"&&t.id!=="summary")){const o=document.createElement("option");o.value=t.id;o.textContent=t.title;o.selected=selectedTools.has(t.id);agentTools.append(o)}
+ for(const s of state.scenarios){const o=document.createElement("option");o.value=s.id;o.textContent=s.name;agentScenarios.append(o)}
+ if(state.scenarios.some(s=>s.id===selectedScenario))agentScenarios.value=selectedScenario;
+ const jobs=byId("agentJobs");jobs.replaceChildren();
+ for(const j of state.jobs){const item=document.createElement("button");item.type="button";item.textContent=j.status+" · "+new Date(j.due).toLocaleString("ru");item.onclick=()=>{if(j.result?.steps)showAgentResult(j.result);else agentOutput.textContent=j.status};jobs.append(item)}
+ byId("agentRuns").textContent=state.runs.map(r=>r.tool+" · "+r.status+" · "+r.duration_ms+" мс · "+r.created.slice(0,19)).join("\n")||"Нет запусков";
+ byId("agentPermissions").textContent=state.registry.map(r=>r.title+" — "+(r.permission==="read_local"?"чтение локально":"отдельное подтверждение")).join("\n");
+}
+function makeAgentSteps(){
+ if(!agentState)throw Error("Реестр не загружен");const selected=Array.from(agentTools.selectedOptions);if(!selected.length)throw Error("Выберите инструменты");
+ const steps=selected.map((o,i)=>({id:"s"+(i+1),tool:o.value,month:agentState!.registry.find(t=>t.id===o.value)?.month?agentMonth.value:"",depends:[] as string[]}));
+ if(steps.length>1)steps.push({id:"summary",tool:"summary",month:"",depends:steps.map(s=>s.id)});return steps
+}
+async function agentAction(action:()=>Promise<void>){if(agentBusy)return;agentBusy=true;try{await action()}catch(e){agentOutput.textContent=e instanceof Error?e.message:"Ошибка"}finally{agentBusy=false}}
+byId("toolAgent").onclick=()=>{closeTools();if(busy)return;const d=new Date();agentMonth.value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");agentDialog.showModal();void agentAction(refreshAgent)};
+byId("agentClose").onclick=()=>agentDialog.close();
+byId("agentRefresh").onclick=()=>void agentAction(refreshAgent);
+byId("agentRun").onclick=()=>void agentAction(async()=>{agentSteps=[];const steps=makeAgentSteps();agentOutput.textContent="Выполнение…";const r=await agentApi<AgentResult>("run",{steps});showAgentResult(r);if(r.ok)agentSteps=steps;await refreshAgent()});
+byId("agentSave").onclick=()=>void agentAction(async()=>{const name=byId<HTMLInputElement>("agentName").value.trim();if(!name)throw Error("Введите название");if(!agentSteps.length)throw Error("Сначала успешно выполните сценарий");await agentApi("save",{name,steps:agentSteps});await refreshAgent();agentOutput.textContent="Сценарий сохранён"});
+byId("agentReplay").onclick=()=>void agentAction(async()=>{if(!agentScenarios.value)throw Error("Выберите сценарий");showAgentResult(await agentApi<AgentResult>("replay",{id:agentScenarios.value}));await refreshAgent()});
+byId("agentQueue").onclick=()=>void agentAction(async()=>{const value=byId<HTMLInputElement>("agentDue").value;if(!value||!agentScenarios.value)throw Error("Выберите сценарий и время");const due=new Date(value);if(!Number.isFinite(due.getTime()))throw Error("Некорректное время");await agentApi("queue",{scenario:agentScenarios.value,due:due.toISOString()});await refreshAgent();agentOutput.textContent="Задача добавлена в локальную очередь"});
+byId("agentMileageSave").onclick=()=>void agentAction(async()=>{const v=Number(byId<HTMLInputElement>("agentVehicle").value),km=Number(byId<HTMLInputElement>("agentKm").value);if(!confirm("Сохранить месячный пробег автомобиля #"+v+"?"))return;await agentApi("mileage",{vehicle:v,month:agentMonth.value,km});agentOutput.textContent="Пробег сохранён"});
+const attachDialog=byId<HTMLDialogElement>("attachDialog"),attachList=byId<HTMLSelectElement>("attachList");
+function attachIds(ids:number[]){
+ if(busy||selected>=0)return;const old=Array.from(chatPrompt.value.matchAll(/\[Документ #(\d+)\]/g),m=>Number(m[1]));
+ const add=Array.from(new Set(ids)).filter(i=>!old.includes(i)).slice(0,Math.max(0,3-old.length));
+ const text=chatPrompt.value.trim()+add.map(i=>"\n[Документ #"+i+"]").join("");
+ if(text.length>1000){chatStatus.textContent="Недостаточно места в сообщении";return}
+ chatPrompt.value=text.trim();resizePrompt();chatPrompt.focus();
+}
+byId("toolAttach").onclick=async()=>{closeTools();if(busy||selected>=0)return;attachDialog.showModal();await refreshWorkspaceMap();if(!attachDialog.open)return;attachList.replaceChildren();for(const f of workspaceMap.files){const o=document.createElement("option");o.value=String(f.id);o.textContent="#"+f.id+" · "+f.name;attachList.append(o)}};
+byId("attachClose").onclick=()=>attachDialog.close();
+byId("attachInsert").onclick=()=>{attachDialog.close();attachIds(Array.from(attachList.selectedOptions).map(o=>Number(o.value)))};
+let attaching=false;
+async function uploadAttachments(files:File[]){
+ if(busy||selected>=0||attaching)return;attaching=true;chatStatus.textContent="Загрузка в локальные документы…";sendButton.disabled=true;
+ try{const ids:number[]=[];for(const file of files.slice(0,3)){
+  const r=await fetch("/api/disk/upload?name="+encodeURIComponent(file.name),{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});
+  const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка загрузки");ids.push(data.id);
+ }attachIds(ids);await refreshWorkspaceMap(true);chatStatus.textContent="Документы сохранены локально"}
+ catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка загрузки"}finally{attaching=false;sendButton.disabled=busy||selected>=0||!ready}
+}
+chat.addEventListener("dragover",e=>{if(e.dataTransfer?.types.includes("Files"))e.preventDefault()});
+chat.addEventListener("drop",e=>{if(!e.dataTransfer?.files.length)return;e.preventDefault();void uploadAttachments(Array.from(e.dataTransfer.files))});
+byId<HTMLInputElement>("attachUpload").onchange=e=>{const input=e.target as HTMLInputElement;const files=Array.from(input.files??[]);input.value="";attachDialog.close();void uploadAttachments(files)};
 const workflowDialog=byId<HTMLDialogElement>("workflowDialog"),workflowKind=byId<HTMLSelectElement>("workflowKind"),workflowMonth=byId<HTMLInputElement>("workflowMonth"),workflowA=byId<HTMLSelectElement>("workflowA"),workflowB=byId<HTMLSelectElement>("workflowB");
 function workflowFields(){
  const compare=workflowKind.value==="compare",edit=workflowKind.value==="edit",bundle=workflowKind.value==="bundle";
@@ -668,6 +724,8 @@ byId<HTMLFormElement>("reportsForm").onsubmit=async e=>{
   for(const name of result.columns){const th=document.createElement("th");th.textContent=name;header.append(th)}head.append(header);table.append(head);
   const body=document.createElement("tbody");for(const values of result.rows){const row=document.createElement("tr");for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.append(cell)}body.append(row)}
   table.append(body);scroll.append(table);reportOutput.append(scroll);
+  let ascending=true;Array.from(header.children).forEach((th,i)=>{const b=document.createElement("button");b.type="button";b.textContent=th.textContent??"";th.replaceChildren(b);b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((a,b)=>{const x=a.cells[i].textContent??"",y=b.cells[i].textContent??"",nx=Number(x),ny=Number(y);return (x.trim()&&y.trim()&&Number.isFinite(nx)&&Number.isFinite(ny)?nx-ny:x.localeCompare(y,"ru",{numeric:true}))*(ascending?1:-1)});ascending=!ascending;body.append(...rows)}});
+  const filter=document.createElement("input");filter.placeholder="Фильтр строк таблицы";filter.setAttribute("aria-label","Фильтр строк отчёта");filter.oninput=()=>{for(const row of Array.from(body.rows))row.hidden=!(row.textContent??"").toLocaleLowerCase("ru").includes(filter.value.toLocaleLowerCase("ru"))};reportOutput.insertBefore(filter,scroll);
   const note=document.createElement("small");note.textContent=result.total_rows===0?"Нет записей":("Строк: "+result.rows.length+" из "+result.total_rows+" · "+new Date(result.generated).toLocaleString("ru"));reportOutput.append(note);
   byId<HTMLButtonElement>("reportDownload").disabled=false;byId<HTMLButtonElement>("reportCopy").disabled=false;
  }catch(e){if(rev===reportRevision)reportOutput.textContent=e instanceof Error?e.message:"Ошибка отчёта"}
