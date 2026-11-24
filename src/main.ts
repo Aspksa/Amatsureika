@@ -558,7 +558,7 @@ function updateToolState(){
  const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
  byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
  byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
- for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator"])byId<HTMLButtonElement>(id).disabled=busy;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
 byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();byId<HTMLDialogElement>("routingConsent").close("local");chatStatus.textContent="Отмена подготовки…"};
@@ -600,6 +600,41 @@ byId<HTMLFormElement>("chatSearchForm").onsubmit=async e=>{
    card.append(title,body,button);results.append(card);
   }
  }catch(e){if(run===searchRun)results.textContent=e instanceof Error?e.message:"Ошибка поиска"}
+};
+type ReportTool={id:string;title:string;monthly:boolean};
+type LocalReport={tool:string;title:string;month:string;columns:string[];rows:string[][];total_rows:number;summary:string[];sources:{source:string;id:number;title:string}[];generated:string};
+const reportsDialog=byId<HTMLDialogElement>("reportsDialog"),reportSelect=byId<HTMLSelectElement>("reportSelect"),reportMonth=byId<HTMLInputElement>("reportMonth"),reportOutput=byId("reportOutput");
+let reportTools:ReportTool[]=[],lastReport:LocalReport|null=null,reportRevision=0;
+function syncReportMonth(){const monthly=!!reportTools.find(t=>t.id===reportSelect.value)?.monthly;reportMonth.disabled=!monthly;reportMonth.required=monthly;byId("reportMonthLabel").hidden=!monthly}
+function resetReport(){lastReport=null;reportOutput.replaceChildren();byId<HTMLButtonElement>("reportDownload").disabled=true;byId<HTMLButtonElement>("reportCopy").disabled=true}
+reportSelect.onchange=()=>{reportRevision++;resetReport();syncReportMonth()};
+reportMonth.onchange=()=>{reportRevision++;resetReport()};
+byId("toolReports").onclick=async()=>{
+ closeTools();reportsDialog.showModal();const rev=++reportRevision;resetReport();reportOutput.textContent="Загрузка инструментов…";
+ try{const data=await routingPost<{tools:ReportTool[]}>("tools",{});if(rev!==reportRevision)return;
+  reportTools=data.tools;reportSelect.replaceChildren();for(const tool of reportTools){const opt=document.createElement("option");opt.value=tool.id;opt.textContent=tool.title;reportSelect.append(opt)}
+  const d=new Date();reportMonth.value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");syncReportMonth();reportOutput.textContent="Выберите инструмент и сформируйте отчёт.";
+ }catch(e){if(rev===reportRevision)reportOutput.textContent=e instanceof Error?e.message:"Инструменты недоступны"}
+};
+byId("reportsClose").onclick=()=>reportsDialog.close();reportsDialog.addEventListener("close",()=>{reportRevision++});
+byId<HTMLFormElement>("reportsForm").onsubmit=async e=>{
+ e.preventDefault();const rev=++reportRevision;resetReport();reportOutput.textContent="Выполняется локальный расчёт…";
+ try{const result=await routingPost<LocalReport>("report",{tool:reportSelect.value,month:reportMonth.disabled?"":reportMonth.value});
+  if(rev!==reportRevision)return;lastReport=result;reportOutput.replaceChildren();
+  const title=document.createElement("h3");title.textContent=result.title+(result.month?" · "+result.month:"");reportOutput.append(title);
+  for(const line of result.summary){const p=document.createElement("p");p.textContent=line;reportOutput.append(p)}
+  const scroll=document.createElement("div");scroll.className="workspace-table";const table=document.createElement("table"),head=document.createElement("thead"),header=document.createElement("tr");
+  for(const name of result.columns){const th=document.createElement("th");th.textContent=name;header.append(th)}head.append(header);table.append(head);
+  const body=document.createElement("tbody");for(const values of result.rows){const row=document.createElement("tr");for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.append(cell)}body.append(row)}
+  table.append(body);scroll.append(table);reportOutput.append(scroll);
+  const note=document.createElement("small");note.textContent=result.total_rows===0?"Нет записей":("Строк: "+result.rows.length+" из "+result.total_rows+" · "+new Date(result.generated).toLocaleString("ru"));reportOutput.append(note);
+  byId<HTMLButtonElement>("reportDownload").disabled=false;byId<HTMLButtonElement>("reportCopy").disabled=false;
+ }catch(e){if(rev===reportRevision)reportOutput.textContent=e instanceof Error?e.message:"Ошибка отчёта"}
+};
+byId("reportCopy").onclick=()=>{if(lastReport)void copyText([lastReport.title,...lastReport.summary,lastReport.columns.join(" | "),...lastReport.rows.map(r=>r.join(" | ")),"Строк: "+lastReport.rows.length+" из "+lastReport.total_rows].join("\n"))};
+function csvCell(s:string){const safe=/^[\s]*[=+\-@]/.test(s)&&!/^[-+]?[0-9]+(?:\.[0-9]+)?$/.test(s)?"'"+s:s;return '"'+safe.replace(/"/g,'""')+'"'}
+byId("reportDownload").onclick=()=>{
+ if(!lastReport)return;const csv=[lastReport.columns,...lastReport.rows].map(r=>r.map(csvCell).join(";")).join("\r\n");const url=URL.createObjectURL(new Blob(["\uFEFF",csv],{type:"text/csv;charset=utf-8"}));const a=document.createElement("a");a.href=url;a.download=lastReport.tool+(lastReport.month?"-"+lastReport.month:"")+".csv";a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)
 };
 byId("toolCalculator").onclick=()=>{closeTools();byId<HTMLDialogElement>("calculatorDialog").showModal()};
 byId("calculatorClose").onclick=()=>byId<HTMLDialogElement>("calculatorDialog").close();
