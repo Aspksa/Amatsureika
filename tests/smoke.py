@@ -17,6 +17,13 @@ def session(data_dir, expected=None):
             for path, token in (("", b"AMATSUREIKA"), ("main.js", b"createElementNS"), ("geometry.js", b"collisions"), ("style.css", b"core-ring"), ("", b"restoreDesign")):
                 with urlopen(url + path, timeout=10) as response:
                     assert response.status == 200 and token in response.read(), path
+            with urlopen(url, timeout=10) as response:
+                assert b'class="core-title"' not in response.read()
+            with urlopen(url + "main.js", timeout=10) as response:
+                source = response.read().decode("utf-8")
+                assert "ДОЛГОВРЕМЕННАЯ ПАМЯТЬ" not in source
+                assert 'class: "satellite-shell", r: 9' in source
+                assert 'class: "cluster-shape"' not in source
             with urlopen(url + "api/design", timeout=10) as response:
                 settings = json.load(response)
             camera = {"zoom": 2.5, "tx": 120, "ty": -32, "mode": "hex"}

@@ -45,3 +45,7 @@ main{height:calc(100dvh - 58px);position:relative}
 #brain[data-lod=overview] .satellite-glyph,#brain[data-quality="0.25"] .satellite-glyph{display:none}
 #brain[data-quality="0.25"] .dot.hot,#brain[data-quality="0.5"] .dot.hot{filter:none;animation:none}
 .map-search{position:absolute;top:16px;left:18px;width:min(250px,65%);z-index:3}.map-search input{width:100%;background:#0d202bb8;border:0;border-radius:12px;padding:11px 14px;color:#d5e8ec;outline:none;font:12px system-ui,sans-serif;backdrop-filter:blur(12px)}.map-search input:focus-visible{outline:1px solid #78daca}.map-search small{font-size:9px;color:#8eacb8}#searchResults:not(:empty){background:#0b1c28f2;padding:5px;border-radius:12px;margin-top:4px;color:#a9c4ce;font-size:11px}#searchResults button{display:block;width:100%;background:transparent;border:0;text-align:left;padding:8px;font-size:11px}#searchResults button:hover{background:#ffffff0d}
+
+/* Anonymous radial preview: only dots, connections and circular satellite icons. */
+.satellite circle.satellite-shell{fill:#0b1c28;fill-opacity:.55;stroke:currentColor;stroke-opacity:.65;stroke-width:.85}
+#brain[data-lod=overview] .satellite .satellite-shell{display:block}

@@ -1,11 +1,11 @@
-import {layout, valid, clamp, labelMask, polar, TAU, type Mode, type Point} from "./geometry.js";
+import {layout, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
 const NS="http://www.w3.org/2000/svg";
 const byId=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const svg=document.getElementById("brain") as unknown as SVGSVGElement;
 const group=(id:string)=>document.getElementById(id) as unknown as SVGGElement;
 const world=group("world"), nodes=group("nodes"), links=group("links"), cells=group("cells"), labels=group("labels"), orbits=group("orbits");
 function el<K extends keyof SVGElementTagNameMap>(tag:K, attrs:Record<string,string|number>={}, parent?:Element):SVGElementTagNameMap[K]{const e=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));parent?.append(e);return e}
-const names=["ЯДРО ЛИЧНОСТИ","ДОЛГОВРЕМЕННАЯ ПАМЯТЬ","МЫШЛЕНИЕ","САМОСТЬ","ЭМОЦИИ","БИОГРАФИЯ","ЗНАНИЯ","ЦЕЛИ","ОБУЧЕНИЕ","РЕШЕНИЯ","ОПЫТ","ДОКУМЕНТЫ","СВЯЗИ","НАВЫКИ","РЕФЛЕКСИЯ","ДИАЛОГ","САМОРАЗВИТИЕ","ВНИМАНИЕ","ИНСТРУМЕНТЫ","КОНТЕКСТ","СИСТЕМА"];
+const names=Array.from({length:21},(_,i)=>"C"+(i+1));
 const palette=["#77d9c7","#93b8ee","#9aa7f0","#c3a6e9","#8cdbb2","#e0ba88","#a8c8d9"];
 type Item={e:SVGElement;cluster:number;index:number;outer:boolean;from:Point;to:Point;now:Point};
 const items:Item[]=[];
@@ -25,14 +25,13 @@ let saveTimer:number|undefined, saveChain=Promise.resolve(), revision=0;
 function motionOff(){return paused||reduced.matches||effects.motion===0}
 const legend=byId("legend"), detail=byId("detail");
 let geometry=layout(counts,mode);
-const angle=(i:number)=>-Math.PI/2+i*TAU/names.length;
 const mix=(a:Point,b:Point,t:number):Point=>({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t});
 function position(item:Item){return geometry.point(item.cluster,item.index,item.outer)}
 function transform(item:Item,p:Point){item.now=valid(p)?p:position(item);if(!valid(item.now))item.now={x:0,y:0}}
 function fitZoom(){return Math.min(1,485/geometry.radius)}
 function color(i:number){return palette[i%palette.length]}
 const glyphs=["M0 -5 4 -2 4 2 0 5 -4 2 -4 -2Z M0 -2v4 M-2 0h4","M-4 -4h8v8h-8Z M-2 -1h4 M-2 2h3","M-4 3 -1 -3 1 1 4 -4 M-4 3h8","M0 -5 5 0 0 5 -5 0Z M0 -2v4","M0 4C-7 0 -4 -5 0 -2 4 -5 7 0 0 4Z","M-4 -3h8 M-4 0h8 M-4 3h5","M-5 -3 0 -5 5 -3 0 0Z M-5 0 0 3 5 0 M-5 3 0 5 5 3","M0 -5 4 3 0 1 -4 3Z","M-5 -2 0 -5 5 -2 0 1Z M-3 0v3l3 2 3-2V0","M-4 0 -1 3 4 -3","M-4 4V0 M0 4v-8 M4 4v-5","M-3 -5h4l3 3v7h-7Z M1 -5v3h3","M-3 -3 3 3 M-3 3 3 -3 M-4 -4h2v2h-2Z M2 2h2v2H2Z","M-4 -1 1 -5 5 -1 0 4 -4 4Z","M-5 0Q0 -6 5 0Q0 6 -5 0Z M0 -2v4","M-5 -4h10v7H0l-3 2V3h-2Z","M-4 4 0 0 4 -4 M0 -4h4v4","M-4 -4h3 M-4 -4v3 M4 4H1 M4 4V1 M0 -2v4","M-5 4 0 -1 M0 -1 2 -4 5 -5 4 -2 1 0Z","M-4 -4h8v8h-8Z M-4 0h8 M0 -4v8","M0 -5 4 -3 4 3 0 5 -4 3 -4 -3Z M-2 0h4"];
-function add(i:number,outer:boolean,n:number){let e:SVGElement;if(outer){e=el("g",{class:"satellite",color:color(i)});el("path",{class:"satellite-shell",d:"M0 -10 8.7 -5 8.7 5 0 10 -8.7 5 -8.7 -5Z"},e);el("path",{class:"satellite-glyph",d:glyphs[i]},e);const title=el("title",{},e);title.textContent=names[i]}else{const hot=(n*13+i*7)%23===0;e=el("circle",{r:hot?3.5:1.8,class:"dot"+(hot?" hot":""),color:color(i)});if(hot)e.style.animationDelay=-(n%9)*.38+"s";e.classList.add("depth-"+(n%3))}e.setAttribute("data-node",nodeId(i,n,outer));e.addEventListener("click",()=>select(i));e.addEventListener("dblclick",ev=>{ev.stopPropagation();focusCluster(i)});const item:Item={e,cluster:i,index:n,outer,from:{x:0,y:0},to:{x:0,y:0},now:{x:0,y:0}};item.to=position(item);item.from=item.to;transform(item,item.to);items.push(item)}
+function add(i:number,outer:boolean,n:number){let e:SVGElement;if(outer){e=el("g",{class:"satellite",color:color(i)});el("circle",{class:"satellite-shell",r:9},e);el("path",{class:"satellite-glyph",d:glyphs[i]},e);const title=el("title",{},e);title.textContent=nodeId(i,n,outer)}else{const hot=(n*13+i*7)%23===0;e=el("circle",{r:hot?3.5:1.8,class:"dot"+(hot?" hot":""),color:color(i)});if(hot)e.style.animationDelay=-(n%9)*.38+"s";e.classList.add("depth-"+(n%3))}e.setAttribute("data-node",nodeId(i,n,outer));e.addEventListener("click",()=>select(i));e.addEventListener("dblclick",ev=>{ev.stopPropagation();focusCluster(i)});const item:Item={e,cluster:i,index:n,outer,from:{x:0,y:0},to:{x:0,y:0},now:{x:0,y:0}};item.to=position(item);item.from=item.to;transform(item,item.to);items.push(item)}
 names.forEach((name,i)=>{for(let n=0;n<counts[i];n++){add(i,false,n)}for(let n=0;n<7+(i%4);n++)add(i,true,n);const b=document.createElement("button");b.className="legend-row";b.style.setProperty("--c",color(i));const sw=document.createElement("i"),title=document.createElement("span"),count=document.createElement("span");title.textContent=name;count.textContent=String(counts[i]);b.append(sw,title,count);b.onclick=()=>select(i);b.ondblclick=()=>focusCluster(i);legend.append(b)});
 function refreshStats(){byId("stats").textContent=items.length+" УЗЛОВ · "+names.length+" КЛАСТЕРОВ";Array.from(legend.children).forEach((b,i)=>{const n=b.lastElementChild;if(n)n.textContent=String(counts[i])})}
 refreshStats();
@@ -40,18 +39,12 @@ function polygon(c:Point,r:number){return Array.from({length:6},(_,j)=>{const p=
 function decorate(){
  for(const g of [orbits,labels,links,cells])g.replaceChildren();
  for(const r of geometry.orbits)el("circle",{r,class:"orbit"},orbits);
- const texts:SVGTextElement[]=[];
- const boxes:{x:number;y:number;w:number;h:number}[]=[];
- names.forEach((name,i)=>{
-  const c=geometry.centers[i],p=geometry.label(i),a=angle(i),r=geometry.radii[i];
+ names.forEach((_,i)=>{
+  const c=geometry.centers[i],r=geometry.radii[i];
   if(mode==="hex"){const h=el("polygon",{points:polygon(c,r),class:"hex-cell cluster-shape",color:color(i)},cells);h.onclick=()=>select(i)}
-  else{const first=geometry.point(i,0,false),last=geometry.point(i,counts[i]-1,false);const rr=Math.max(Math.hypot(first.x,first.y),Math.hypot(last.x,last.y))+13,ri=Math.hypot(first.x,first.y)-10,half=TAU/names.length*.43;const p1=polar(ri,a-half),p2=polar(rr,a-half),p3=polar(rr,a+half),p4=polar(ri,a+half);const h=el("path",{d:`M${p1.x} ${p1.y} L${p2.x} ${p2.y} A${rr} ${rr} 0 0 1 ${p3.x} ${p3.y} L${p4.x} ${p4.y} A${ri} ${ri} 0 0 0 ${p1.x} ${p1.y} Z`,class:"cluster-shape",color:color(i)},cells);h.onclick=()=>select(i)}
   const path=`M0 0 L${c.x} ${c.y}`;el("path",{d:path,class:"spoke",style:"opacity:"+density*.55},links);
   if(i%2===0&&!motionOff()&&quality>=.5){const dot=el("circle",{r:1.8,class:"particle"},links);el("animateMotion",{path,dur:(4+i%5)/speed+"s",begin:-(i%7)+"s",repeatCount:"indefinite"},dot)}
-  const t=el("text",{x:p.x,y:p.y,class:"cluster-label",color:color(i),"text-anchor":"middle"},labels);t.textContent=name;t.onclick=()=>select(i);t.ondblclick=()=>focusCluster(i);texts.push(t);
-  const w=Math.max(name.length*7+8,t.getComputedTextLength()+8);boxes.push({x:p.x-w/2,y:p.y-13,w,h:18});
  });
- const mask=labelMask(boxes,selected);texts.forEach((t,i)=>{if(!mask[i])t.style.display="none"});
  if(selected>=0){const c=geometry.centers[selected];for(let i=0;i<names.length;i++)if(i!==selected){const p=geometry.centers[i];el("path",{d:`M${c.x} ${c.y} Q0 0 ${p.x} ${p.y}`,fill:"none",color:color(selected),class:"selected-link"},links)}}
  drawEdges();if(motionOff())svg.pauseAnimations();else svg.unpauseAnimations();
 }
