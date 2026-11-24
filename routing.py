@@ -1,5 +1,7 @@
 """Local-first retrieval and explicitly approved, bounded cloud context."""
 import json
+import ast
+from decimal import Decimal, localcontext, DecimalException
 import re
 import sqlite3
 import threading
@@ -123,7 +125,7 @@ class Router:
             result.append(("file",r["id"],r["name"],"",r["updated"],r["updated"]+"|"+str(stat.st_mtime_ns),path))
         return result
 
-    def search(self,q):
+    def search(self,q,scope="all"):
         terms=tokens(q)
         if not terms: return []
         # Safe, literal FTS query; no user-controlled operators.
@@ -163,6 +165,7 @@ class Router:
                 candidates.append(("memory",block,"Сообщение #"+str(r["id"])+" ("+r["role"]+")",r["text"],r["created_at"],r["id"]))
         hits=[]
         for source,i,title,body,stamp,message in candidates:
+            if scope!="all" and source!=scope: continue
             words=set(tokens(title+" "+body)) if len(body)<120 else set(re.findall(r"[^\W_]+",(title+" "+body).casefold()))
             found=[t for t in terms if t in words]
             if not found: continue
@@ -177,6 +180,13 @@ class Router:
             if key not in seen: distinct.append(h);seen.add(key)
             if len(distinct)>=8: break
         return distinct
+
+    def search_tool(self,value):
+        if not isinstance(value,dict) or set(value)!={"text","scope"} or value["scope"] not in ("all","memory","work","file"):
+            raise ValueError("Некорректная область поиска")
+        q=value["text"]
+        if not isinstance(q,str) or not q.strip() or len(q)>1000: raise ValueError("Некорректный поиск")
+        return {"hits":self.search(q, value["scope"]),"fts":self.fts}
 
     def plan(self,value):
         value=validate(value)
@@ -254,3 +264,37 @@ class Router:
                 result=self.chat.memory_append(req,plan["local"])
                 self.plans.pop(value["token"],None)
             return {**result,"route":"cloud" if paid else "local"}
+
+def calculate(value):
+    if not isinstance(value,dict) or set(value)!={"expression"}:
+        raise ValueError("Некорректное выражение")
+    expr=value["expression"]
+    if not isinstance(expr,str) or not expr.strip() or len(expr)>160:
+        raise ValueError("Введите выражение до 160 символов")
+    expr=expr.strip().replace("×","*").replace("÷","/").replace("−","-").replace(",",".")
+    if not re.fullmatch(r"[0-9.+*/() \t-]+",expr):
+        raise ValueError("Только числа, + − × ÷ и скобки")
+    def walk(node):
+        if isinstance(node,ast.Constant) and type(node.value) in (int,float):
+            result=Decimal(ast.get_source_segment(expr,node))
+        elif isinstance(node,ast.UnaryOp) and type(node.op) in (ast.UAdd,ast.USub):
+            result=walk(node.operand)
+            if isinstance(node.op,ast.USub):result=-result
+        elif isinstance(node,ast.BinOp) and type(node.op) in (ast.Add,ast.Sub,ast.Mult,ast.Div):
+            a,b=walk(node.left),walk(node.right)
+            if isinstance(node.op,ast.Add):result=a+b
+            elif isinstance(node.op,ast.Sub):result=a-b
+            elif isinstance(node.op,ast.Mult):result=a*b
+            else:result=a/b
+        else:raise ValueError("Недопустимая операция")
+        if not result.is_finite() or abs(result)>Decimal("1e50"):raise ValueError("Число слишком большое")
+        return result
+    try:
+        tree=ast.parse(expr,mode="eval")
+        if sum(1 for _ in ast.walk(tree))>100:raise ValueError("Слишком сложное выражение")
+        with localcontext() as ctx:
+            ctx.prec=28
+            result=walk(tree.body)
+            return {"result":str(result.normalize()) if result else "0"}
+    except (SyntaxError,DecimalException,OverflowError,RecursionError):
+        raise ValueError("Неверное выражение или деление на ноль") from None
