@@ -11,7 +11,7 @@ type Item={e:SVGElement;cluster:number;index:number;outer:boolean;from:Point;to:
 const items:Item[]=[];
 const counts=names.map((_,i)=>i===16?176: i===0?88: 24+(i*17)%67);
 let mode:Mode="radial", selected=-1, zoom=1, tx=0,ty=0, speed=1, density=.5, paused=matchMedia("(prefers-reduced-motion: reduce)").matches;
-let frame=0, start=0, moving=false, dirty=true, quality=1, slowFrames=0, fastFrames=0, lastFrame=0;
+let frame=0, start=0, moving=false, quality=1, slowFrames=0, fastFrames=0, lastFrame=0;
 let flight:{z:number;x:number;y:number;fromZ:number;fromX:number;fromY:number;begin:number}|null=null;
 let cameraTimer:number|undefined,cameraRevision=0,cameraLoaded=false;
 let cameraChain=Promise.resolve();
@@ -49,17 +49,17 @@ function decorate(){
   const path=`M0 0 L${c.x} ${c.y}`;el("path",{d:path,class:"spoke",style:"opacity:"+density*.55},links);
   if(i%2===0&&!motionOff()&&quality>=.5){const dot=el("circle",{r:1.8,class:"particle"},links);el("animateMotion",{path,dur:(4+i%5)/speed+"s",begin:-(i%7)+"s",repeatCount:"indefinite"},dot)}
   const t=el("text",{x:p.x,y:p.y,class:"cluster-label",color:color(i),"text-anchor":"middle"},labels);t.textContent=name;t.onclick=()=>select(i);t.ondblclick=()=>focusCluster(i);texts.push(t);
-  const w=name.length*7+8;boxes.push({x:p.x-w/2,y:p.y-13,w,h:18});
+  const w=Math.max(name.length*7+8,t.getComputedTextLength()+8);boxes.push({x:p.x-w/2,y:p.y-13,w,h:18});
  });
  const mask=labelMask(boxes,selected);texts.forEach((t,i)=>{if(!mask[i])t.style.display="none"});
  if(selected>=0){const c=geometry.centers[selected];for(let i=0;i<names.length;i++)if(i!==selected){const p=geometry.centers[i];el("path",{d:`M${c.x} ${c.y} Q0 0 ${p.x} ${p.y}`,fill:"none",color:color(selected),class:"selected-link"},links)}}
  drawEdges();if(motionOff())svg.pauseAnimations();else svg.unpauseAnimations();
 }
 function select(i:number){if(selected>=0&&selected!==i)previous=selected;selected=i===selected?-1:i;Array.from(legend.children).forEach((b,j)=>b.classList.toggle("selected",j===selected));for(const item of items){item.e.classList.toggle("chosen",item.cluster===selected);item.e.style.opacity=selected<0||item.cluster===selected?"":"0.22"}requestFrame();detail.textContent=selected<0?"Выберите кластер или точку на карте.":names[selected]+" · "+counts[selected]+" демонстрационных точек. Подсвечены связи к другим кластерам.";decorate()}
-function requestFrame(){dirty=true;if(!frame)frame=requestAnimationFrame(renderFrame)}
+function requestFrame(){if(!frame)frame=requestAnimationFrame(renderFrame)}
 function renderFrame(now:number){
  frame=0;
- if(lastFrame&&moving||lastFrame&&flight){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
+ if(lastFrame&&(moving||flight)){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
  lastFrame=now;
  if(moving){const p=motionOff()?1:Math.min(1,(now-start)/700),e=p*p*(3-2*p);for(const it of items)transform(it,mix(it.from,it.to,e));moving=p<1}
  if(flight){const f=flight,p=motionOff()?1:Math.min(1,(now-f.begin)/650),e=p*p*(3-2*p);zoom=Math.exp(Math.log(f.fromZ)+(Math.log(f.z)-Math.log(f.fromZ))*e);tx=f.fromX+(f.x-f.fromX)*e;ty=f.fromY+(f.y-f.fromY)*e;if(p===1){flight=null;saveCamera()}}
@@ -75,7 +75,7 @@ function renderFrame(now:number){
   const visible=x>=view.x-margin&&x<=view.x+view.width+margin&&y>=view.y-margin&&y<=view.y+view.height+margin&&(it.outer||it.cluster===selected||it.index%stride===0);
   if(visible){it.e.setAttribute("transform",`translate(${it.now.x.toFixed(2)} ${it.now.y.toFixed(2)})`);if(!it.e.isConnected)fragment.append(it.e);it.e.classList.toggle("fine-dot",!it.outer&&level==="detail")}else if(it.e.parentNode===nodes)it.e.remove();
  }
- nodes.append(fragment);dirty=false;
+ nodes.append(fragment);
  if(moving||flight){requestFrame()}else lastFrame=0;
 }
 function relayout(){geometry=layout(counts,mode);for(const it of items){it.from=valid(it.now)?it.now:position(it);it.to=position(it)}start=performance.now();moving=true;decorate();requestFrame()}
@@ -85,7 +85,7 @@ function zoomAt(factor:number,x=0,y=0){flight=null;const next=clamp(zoom*factor,
 function coords(x:number,y:number):Point{const matrix=svg.getScreenCTM();if(!matrix)return{x:0,y:0};const p=new DOMPoint(x,y).matrixTransform(matrix.inverse());return{x:p.x,y:p.y}}
 svg.addEventListener("wheel",e=>{e.preventDefault();const p=coords(e.clientX,e.clientY);zoomAt(Math.exp(-e.deltaY*.0015),p.x,p.y)},{passive:false});
 let drag:{id:number;point:Point;tx:number;ty:number;moved:boolean}|null=null;
-svg.addEventListener("pointerdown",e=>{if(e.button!==0)return;flight=null;drag={id:e.pointerId,point:coords(e.clientX,e.clientY),tx,ty,moved:false}});
+svg.addEventListener("pointerdown",e=>{if(e.button!==0)return;flight=null;cameraRevision++;drag={id:e.pointerId,point:coords(e.clientX,e.clientY),tx,ty,moved:false}});
 svg.addEventListener("pointermove",e=>{if(!drag||drag.id!==e.pointerId)return;const p=coords(e.clientX,e.clientY),dx=p.x-drag.point.x,dy=p.y-drag.point.y;if(!drag.moved&&Math.hypot(dx,dy)<4)return;drag.moved=true;svg.setPointerCapture(e.pointerId);svg.classList.add("dragging");tx=drag.tx+dx;ty=drag.ty+dy;camera()});
 function stop(){if(drag?.moved)saveCamera();drag=null;svg.classList.remove("dragging")}svg.addEventListener("pointerup",stop);svg.addEventListener("pointercancel",stop);
 const reset=()=>animateCamera(fitZoom(),0,0);byId("reset").onclick=reset;byId("minus").onclick=()=>zoomAt(.8);byId("plus").onclick=()=>zoomAt(1.25);group("core").addEventListener("click",()=>{reset();if(selected>=0)select(selected)});group("core").addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();reset();if(selected>=0)select(selected)}});
@@ -120,7 +120,7 @@ function applyPause(){document.body.classList.toggle("paused",motionOff());byId(
 byId("pause").onclick=()=>{paused=!paused;decorate();applyPause()};
 const panel=byId("panel"),toggle=byId("panelToggle");panel.hidden=true;toggle.setAttribute("aria-expanded","false");toggle.onclick=()=>{panel.hidden=!panel.hidden;toggle.setAttribute("aria-expanded",String(!panel.hidden))};decorate();applyEffects(false);zoom=fitZoom();camera();void loadDesign();void loadCamera();
 
-function animateCamera(z:number,x:number,y:number){flight={z:clamp(z,.025,64,fitZoom()),x:clamp(x,-1e6,1e6),y:clamp(y,-1e6,1e6),fromZ:zoom,fromX:tx,fromY:ty,begin:performance.now()};requestFrame()}
+function animateCamera(z:number,x:number,y:number){cameraRevision++;flight={z:clamp(z,.025,64,fitZoom()),x:clamp(x,-1e6,1e6),y:clamp(y,-1e6,1e6),fromZ:zoom,fromX:tx,fromY:ty,begin:performance.now()};requestFrame()}
 function anchor(i:number){return geometry.centers[i]}
 function focusCluster(i:number){if(selected!==i)select(i);const p=anchor(i),z=Math.min(3,Math.max(.4,200/geometry.radii[i]));animateCamera(z,-p.x*z,-p.y*z)}
 function grow(i:number){

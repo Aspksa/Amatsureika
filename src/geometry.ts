@@ -17,10 +17,10 @@ const axialPoint=(index:number,pitch:number):Point=>{const [q,r]=axial(index);re
 export type Layout={mode:Mode;radius:number;outer:number;centers:Point[];radii:number[];orbits:number[];point:(i:number,n:number,outer:boolean)=>Point;label:(i:number)=>Point};
 export function layout(raw:readonly number[],mode:Mode):Layout{
  const counts=raw.map(n=>Math.floor(clamp(n,1,10000,1))),k=counts.length||1;
- const pitch=10,cols=7,arc=pitch*(cols+1),inner=Math.max( mode==="compact"?145:190,arc*k/TAU+15);
+ const pitch=mode==="radial"?12:10,cols=7,arc=pitch*(cols+1),inner=Math.max( mode==="compact"?145:190,arc*k/TAU+15);
  const angle=(i:number)=>-Math.PI/2+i*TAU/k;
  const max=Math.max(1,...counts),rows=Math.ceil(max/cols),edge=inner+(rows-1)*pitch;
- const outer=edge+45;
+ const outer=Math.max(edge+45, (5*24)*k/TAU+20);
  const radii=counts.map(n=>{const ring=Math.ceil((Math.sqrt(12*Math.max(0,n-1)+9)-3)/6);return Math.max(62,ring*pitch+42)});
  const spacing=2*Math.max(62,...radii)+24;
  const centers=counts.map((n,i)=>mode==="hex"?axialPoint(i+1,spacing):polar(inner+(Math.ceil(n/cols)-1)*pitch/2,angle(i)));

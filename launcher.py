@@ -54,10 +54,10 @@ def find_npm(node):
 
 def build():
     node = find_node()
-    output = ROOT / "public/main.js"
-    source = ROOT / "src/main.ts"
+    outputs = [ROOT / "public/main.js", ROOT / "public/geometry.js"]
+    sources = list((ROOT / "src").glob("*.ts")) + [ROOT / "tsconfig.json"]
     if not node:
-        if output.is_file() and output.stat().st_mtime >= max(source.stat().st_mtime, (ROOT / "tsconfig.json").stat().st_mtime):
+        if all(p.is_file() and p.stat().st_mtime >= max(s.stat().st_mtime for s in sources) for p in outputs):
             say("Node.js not found; using existing frontend build.")
             return
         raise RuntimeError("Node.js not found. Install Node.js LTS, or place portable Node in runtime/node.")
@@ -68,8 +68,8 @@ def build():
     if not TSC.is_file():
         raise RuntimeError("TypeScript compiler missing after installation.")
     run([node, TSC, "-p", ROOT / "tsconfig.json"])
-    if not output.is_file():
-        raise RuntimeError("Frontend build did not produce public/main.js.")
+    if not all(p.is_file() for p in outputs):
+        raise RuntimeError("Frontend build did not produce all JS modules.")
 
 def main():
     parser = argparse.ArgumentParser()

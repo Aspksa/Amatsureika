@@ -14,7 +14,7 @@ def session(data_dir, expected=None):
         try:
             url = proc.stdout.readline().strip()
             assert url.startswith("http://127.0.0.1:"), url
-            for path, token in (("", b"AMATSUREIKA"), ("main.js", b"createElementNS"), ("style.css", b"core-ring"), ("", b"restoreDesign")):
+            for path, token in (("", b"AMATSUREIKA"), ("main.js", b"createElementNS"), ("geometry.js", b"collisions"), ("style.css", b"core-ring"), ("", b"restoreDesign")):
                 with urlopen(url + path, timeout=10) as response:
                     assert response.status == 200 and token in response.read(), path
             with urlopen(url + "api/design", timeout=10) as response:
