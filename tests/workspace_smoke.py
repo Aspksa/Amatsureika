@@ -29,6 +29,8 @@ with tempfile.TemporaryDirectory() as d:
     assert w.download(file)[0].read_bytes()==b"hello"
     assert w.map_summary()["files"]==[{"id":file,"name":"договор.txt","size":5}]
     assert w.map_summary()["work"]["fuel"]==1
+    assert {r["kind"] for r in w.map_summary()["records"]}=={"vehicles","cards","timesheet","fuel"}
+    assert all(r["id"]!=staff for r in w.map_summary()["records"])
     fails(lambda:w.upload(folder,"../secret",io.BytesIO(b"x"),1))
     fails(lambda:w.upload(folder,"ДОГОВОР.TXT",io.BytesIO(b"x"),1))
     fails(lambda:w.upload(folder,"broken.txt",io.BytesIO(b"x"),2))

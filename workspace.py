@@ -234,7 +234,8 @@ class Workspace:
                 ) SELECT id,name,size FROM live WHERE kind='file' ORDER BY id
             """).fetchall()
             work=db.execute("SELECT kind,COUNT(*) AS count FROM work_records WHERE archived=0 GROUP BY kind").fetchall()
-            return {"files":[dict(r) for r in rows],"work":{r["kind"]:r["count"] for r in work}}
+            records=db.execute("SELECT id,kind FROM work_records WHERE archived=0 ORDER BY id").fetchall()
+            return {"files":[dict(r) for r in rows],"work":{r["kind"]:r["count"] for r in work},"records":[dict(r) for r in records]}
 
     def download(self,rid):
         with closing(self.connect()) as db:

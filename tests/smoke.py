@@ -28,7 +28,7 @@ def session(data_dir, expected=None):
             with urlopen(url+"api/disk",timeout=10) as response:
                 assert json.load(response)=={"entries":[],"crumbs":[]}
             with urlopen(url+"api/workspace/map",timeout=10) as response:
-                assert json.load(response)=={"files":[],"work":{}}
+                assert json.load(response)=={"files":[],"work":{},"records":[]}
             with urlopen(url + "main.js", timeout=10) as response:
                 source = response.read().decode("utf-8")
                 assert "ДОЛГОВРЕМЕННАЯ ПАМЯТЬ" not in source
