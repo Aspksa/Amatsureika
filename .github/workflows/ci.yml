@@ -54,6 +54,7 @@ jobs:
       - run: python tests/global_ui_contract.py
       - run: python tests/global_reasoning_smoke.py
       - run: python tests/universal_agent_smoke.py
+      - run: python tests/universal_web_smoke.py
       - name: Upload startup log
         if: always()
         uses: actions/upload-artifact@v4

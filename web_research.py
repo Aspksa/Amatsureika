@@ -188,7 +188,7 @@ class WebResearch:
                 second=self.search(refined);queries.append(refined)
                 items=items+[x for x in second["items"] if x["url"] not in {y["url"] for y in items}]
             except ValueError:pass
-        pages=[];errors=[];domains=set()
+        pages=[];errors=[];domains=set();stages=[{"stage":"search","count":len(items),"queries":queries}]
         for item in items:
             host=urlsplit(item["url"]).hostname
             if host in domains:continue
@@ -196,13 +196,31 @@ class WebResearch:
             try:pages.append(self.read(item["url"]))
             except ValueError as e:errors.append({"url":item["url"],"error":str(e)})
             if len(pages)+len(errors)>=3:break
+        stages.append({"stage":"read","count":len(pages),"errors":len(errors)})
         terms=set(re.findall(r"\w{4,}",q.casefold()))
         overlaps=[]
         for i,a in enumerate(pages):
             for b in pages[i+1:]:
                 shared=sorted(terms & set(re.findall(r"\w+",a["text"].casefold())) & set(re.findall(r"\w+",b["text"].casefold())))
                 if shared:overlaps.append({"a":a["url"],"b":b["url"],"terms":shared})
-        return {"queries":queries,"pages":[{**p,"text":p["text"][:4000]} for p in pages],"errors":errors,"overlaps":overlaps,"note":"Совпадение терминов не доказывает достоверность или независимость источников. Даты публикации извлечены из метаданных и не проверены."}
+        return {"stages":stages+[{"stage":"compare","count":len(overlaps)}],"queries":queries,"pages":[{**p,"text":p["text"][:4000]} for p in pages],"errors":errors,"overlaps":overlaps,"note":"Совпадение терминов не доказывает достоверность или независимость источников. Даты публикации извлечены из метаданных и не проверены."}
+    def compare_pages(self,urls,query):
+        if not isinstance(urls,list) or not 2<=len(urls)<=5 or any(not safe_link(u) for u in urls) or len(set(urls))!=len(urls):raise ValueError("2–5 различных публичных HTTPS URL")
+        if not isinstance(query,str) or len(query)>250:raise ValueError("Тема сравнения до 250 символов")
+        terms=set(re.findall(r"\w{3,}",query.casefold()))
+        pages=[];errors=[];rows=[]
+        for url in urls:
+            try:
+                p=self.read(url)
+                lines=p["text"].splitlines()
+                ranked=sorted(enumerate(lines),key=lambda x:(len(terms & set(re.findall(r"\w+",x[1].casefold()))),-x[0]),reverse=True)
+                excerpts=[x[:400] for _,x in ranked[:5] if terms & set(re.findall(r"\w+",x.casefold()))]
+                # Literal price mentions only: no assumed product, currency conversion or current availability.
+                prices=list(dict.fromkeys(re.findall(r"(?<!\w)(?:[€$]\s*\d[\d .,]{0,15}|\d[\d .,]{0,15}\s*(?:₽|руб(?:лей|\.)?|EUR|USD|RUB))(?!\w)",p["text"],re.I)))[:10]
+                rows.append({"url":p["url"],"title":p["title"],"fetched":p["fetched"],"prices":[x.strip() for x in prices],"excerpts":excerpts,"matched_terms":sorted(terms & set(re.findall(r"\w+",p["text"].casefold())))})
+                pages.append({**p,"text":p["text"][:4000]})
+            except ValueError as e:errors.append({"url":url,"error":str(e)})
+        return {"pages":pages,"comparison":rows,"errors":errors,"note":"Цены и характеристики — буквальные выдержки из доступного текста. Не гарантируется одинаковый товар, актуальность цены или наличие. Пустые поля означают отсутствие извлечённых данных."}
     def download(self,url):
         if not safe_link(url):raise ValueError("Нужен HTTPS URL")
         r=self.request(url,MAX_DOC);body=r["body"]
@@ -244,6 +262,7 @@ class WebResearch:
     def dispatch(self,v):
         if not isinstance(v,dict) or v.get("confirm") is not True:raise ValueError("Нужно явное разрешение на интернет")
         action=v.get("action")
+        if action=="compare" and set(v)=={"action","confirm","urls","query"}:return self.compare_pages(v["urls"],v["query"])
         if action in ("search","news","research") and set(v)=={"action","confirm","query"}:
             return self.research(v["query"]) if action=="research" else self.search(v["query"],action=="news")
         if action in ("read","download","watch") and set(v)=={"action","confirm","url"}:

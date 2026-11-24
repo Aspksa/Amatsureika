@@ -830,10 +830,10 @@ byId("agentMileageSave").onclick=()=>void agentAction(async()=>{const v=Number(b
 type WebPage={url:string;title:string;text:string;published:string;modified:string;fetched:string;cached?:boolean};
 type WebItem={url:string;title:string;published:string;publisher:string};
 type WebWatch={id:string;url:string;status:string;enabled:number;checked:string};
-type WebResult={items?:WebItem[]|WebWatch[];pages?:WebPage[];overlaps?:{a:string;b:string;terms:string[]}[];errors?:{url:string;error:string}[];queries?:string[];note?:string;provider?:string;fetched?:string;cached?:boolean;title?:string;text?:string;url?:string;published?:string;modified?:string;name?:string;status?:string};
+type WebResult={stages?:{stage:string;count:number}[];comparison?:{url:string;title:string;fetched:string;prices:string[];excerpts:string[];matched_terms:string[]}[];items?:WebItem[]|WebWatch[];pages?:WebPage[];overlaps?:{a:string;b:string;terms:string[]}[];errors?:{url:string;error:string}[];queries?:string[];note?:string;provider?:string;fetched?:string;cached?:boolean;title?:string;text?:string;url?:string;published?:string;modified?:string;name?:string;status?:string};
 const webDialog=byId<HTMLDialogElement>("webDialog"),webActionSelect=byId<HTMLSelectElement>("webAction"),webInput=byId<HTMLInputElement>("webInput"),webOutput=byId("webOutput");
 let webBusy=false;
-function webFields(){const action=webActionSelect.value;webInput.required=action!=="watches";byId("webInputLabel").hidden=action==="watches";webInput.placeholder=["read","download","watch"].includes(action)?"https://…":"Поисковый запрос (публичный)"}
+function webFields(){const action=webActionSelect.value;byId("webCompareLabel").hidden=action!=="compare";webInput.required=action!=="watches";byId("webInputLabel").hidden=action==="watches";webInput.placeholder=action==="compare"?"2–5 HTTPS URL через пробел":["read","download","watch"].includes(action)?"https://…":"Поисковый запрос (публичный)"}
 webActionSelect.onchange=webFields;
 function webText(s:string){const p=document.createElement("p");p.textContent=s;webOutput.append(p)}
 function webLink(url:string,title:string){
@@ -844,15 +844,18 @@ function pageCard(page:WebPage){webLink(page.url,page.title);webText("Публи
 async function webRun(action:string,input?:string){
  if(webBusy)return;if(localOnly&&action!=="watches"&&action!=="disable"){webOutput.textContent="Отключите локальный режим для доступа в интернет.";return}
  webBusy=true;webOutput.textContent="Выполнение…";
- const body:Record<string,string|boolean>={action,confirm:true};
- if(["search","news","research"].includes(action))body.query=input??"";
+ const body:Record<string,unknown>={action,confirm:true};
+ if(action==="compare"){body.urls=(input??"").split(/\s+/).filter(Boolean);body.query=byId<HTMLInputElement>("webCompareQuery").value.trim()}
+ else if(["search","news","research"].includes(action))body.query=input??"";
  else if(action==="disable")body.id=input??"";
  else if(action!=="watches")body.url=input??"";
  try{
   const r=await agentApi<WebResult>("web",body);webOutput.replaceChildren();
   if(r.provider)webText(r.provider+" · "+(r.fetched??"")+(r.cached?" · кеш":""));
   if(r.queries)webText("Запросы: "+r.queries.join(" / "));
-  if(r.pages)for(const page of r.pages)pageCard(page);
+  if(r.stages)webText(r.stages.map(x=>x.stage+": "+x.count).join(" → "));
+  if(r.comparison){for(const row of r.comparison){webLink(row.url,row.title);webText("Цена в тексте: "+(row.prices.join(" / ")||"не найдена"));webText(row.excerpts.join("\n")||"Нет выдержек по теме");webText("Получено: "+row.fetched)}}
+  else if(r.pages)for(const page of r.pages)pageCard(page);
   if(r.overlaps?.length)for(const overlap of r.overlaps)webText("Общие термины: "+overlap.terms.join(", ")+" · "+overlap.a+" ↔ "+overlap.b);
   if(r.errors)for(const error of r.errors)webText(error.url+": "+error.error);
   if(r.note)webText(r.note);
@@ -872,7 +875,7 @@ byId("webClose").onclick=()=>webDialog.close();
 bindOrbit("webIcon",()=>{if(!busy){webFields();webDialog.showModal()}});
 byId("correctionClose").onclick=()=>byId<HTMLDialogElement>("correctionDialog").close();
 byId<HTMLFormElement>("correctionForm").onsubmit=async e=>{e.preventDefault();const d=byId<HTMLDialogElement>("correctionDialog"),text=byId<HTMLTextAreaElement>("correctionText").value.trim();if(!text)return;const btn=byId<HTMLButtonElement>("correctionSave");btn.disabled=true;try{await routingPost("correction",{message:Number(byId<HTMLInputElement>("correctionId").value),text,confirm:true});d.close();chatStatus.textContent="Исправление сохранено как кандидат, не подтверждённый факт";if(!busy&&selected<0){chatPrompt.value=("Исправление: "+text).slice(0,1000);resizePrompt();chatPrompt.focus()}}catch(e){byId("correctionStatus").textContent=e instanceof Error?e.message:"Ошибка"}finally{btn.disabled=false}};
-byId<HTMLFormElement>("webForm").onsubmit=e=>{e.preventDefault();const action=webActionSelect.value,input=webInput.value.trim();if(action==="watch"&&!confirm("Разрешить автоматическую проверку этого публичного сайта раз в час при работающем сервере?"))return;void webRun(action,input)};
+byId<HTMLFormElement>("webForm").onsubmit=e=>{e.preventDefault();const action=webActionSelect.value,input=webInput.value.trim();if(action==="compare"&&!confirm("Разрешить чтение именно этих публичных страниц?\n"+input))return;if(action==="watch"&&!confirm("Разрешить автоматическую проверку этого публичного сайта раз в час при работающем сервере?"))return;void webRun(action,input)};
 byId("webCopy").onclick=()=>void copyText(webOutput.innerText);
 byId("webToChat").onclick=()=>{if(busy||selected>=0)return;const excerpt=webOutput.innerText.trim();if(!excerpt)return;chatPrompt.value=("Проанализируй эти интернет-выдержки (не проверенные факты):\n"+excerpt).slice(0,1000);resizePrompt();webDialog.close();chatPrompt.focus()};
 type KnowledgeItem={id:string;kind:string;subject:string;predicate:string;value:string;context:string;state:string;confidence:number;expires:string;updated:string;stale?:boolean;semantic_score?:number;fusion_score?:number;created?:string;uses?:number;sources?:{source_type:string;source_id:string}[];links?:{a:string;b:string;kind:string;strength:number}[];versions?:number};
