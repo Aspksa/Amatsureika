@@ -1,6 +1,7 @@
 """Local-first retrieval and explicitly approved, bounded cloud context."""
 import json
 from tool_engine import ToolEngine, catalog, command, report_text
+from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
 import ast
 from decimal import Decimal, localcontext, DecimalException
 import re
@@ -65,6 +66,7 @@ class Router:
     def __init__(self,chat,workspace,cloud):
         self.chat,self.workspace,self.cloud=chat,workspace,cloud
         self.tools=ToolEngine(workspace,chat)
+        self.advanced=AdvancedTools(workspace,self.tools,extract)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
@@ -193,12 +195,40 @@ class Router:
     def plan(self,value):
         value=validate(value)
         q=value["text"]
-        tool=command(q)
+        task=parse_command(q)
+        advanced_answer=None;advanced_sources=[];mutation=None
+        receipt=self.workspace.edit_receipt(value["request_id"],q)
+        if receipt:
+            advanced_answer="Изменение уже сохранено: запись #"+str(receipt["id"])+" · "+receipt["label"]
+        elif task:
+            action,args=task
+            if action=="bundle":
+                data=self.advanced.bundle(args);advanced_answer=bundle_text(data)
+                advanced_sources=[h for r in data["reports"] for h in r["sources"]]
+            elif action=="anomalies":
+                data=self.advanced.anomalies();advanced_answer=anomaly_text(data)
+                advanced_sources=[{"source":"work","id":i,"title":a["text"]} for a in data["issues"] for i in a["ids"]]
+            elif action=="compare":
+                data=self.advanced.compare(*args);advanced_answer=compare_text(data)
+                advanced_sources=[{"source":"file","id":f["id"],"title":f["name"]} for f in data["files"]]
+            else:
+                mutation=self.advanced.preview(*args)
+                advanced_answer="Изменение не выполнено: требуется подтверждение."
+                advanced_sources=[{"source":"work","id":mutation["id"],"title":mutation["label"]}]
+        tool=command(q) if advanced_answer is None else None
         report=self.tools.run(tool) if tool else None
-        hits=self.search(q) if report is None else []
+        hits=self.search(q) if report is None and advanced_answer is None else []
         count_kinds={"сотрудников":"staff","автомобилей":"vehicles","машин":"vehicles","топливных карт":"cards","записей табеля":"timesheet","записей гсм":"fuel"}
         count_match=re.fullmatch(r"сколько\s+(сотрудников|автомобилей|машин|топливных карт|записей табеля|записей гсм|файлов|документов|сообщений)[?\s]*",q.casefold())
-        count_answer=None
+        count_answer=advanced_answer
+        if advanced_answer is not None:
+            seen=set()
+            for h in advanced_sources:
+                key=(h["source"],h["id"])
+                if key in seen:continue
+                seen.add(key)
+                hits.append({**h,"message_id":None,"text":"Источник локального инструмента","updated":datetime.now(timezone.utc).isoformat(),"age_days":0,"coverage":1,"matched":[]})
+                if len(hits)>=8:break
         if report is not None:
             count_answer=report_text(report)
             hits=[{**h,"message_id":None,"text":"Источник учтён в локальном отчёте","updated":report["generated"],"age_days":0,"coverage":1,"matched":[]} for h in report["sources"]]
@@ -235,7 +265,7 @@ class Router:
         if any(h["age_days"]>365 for h in hits): local+="\nНекоторые источники старше года; актуальность не подтверждена."
         if conflicts: local+="\nВозможные расхождения: "+"; ".join(conflicts)
         if count_answer is not None: local=count_answer;conflicts=[]
-        plan={"token":uuid4().hex,"hits":hits,"intent":"tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts}
+        plan={"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation}
         with self.lock:
             now=time.monotonic()
             for k in list(self.plans):
@@ -245,7 +275,7 @@ class Router:
         return plan
 
     def execute(self,value):
-        if not isinstance(value,dict) or set(value)!={"token","request_id","text","cloud"} or type(value["cloud"]) is not bool:
+        if not isinstance(value,dict) or set(value) not in ({"token","request_id","text","cloud"},{"token","request_id","text","cloud","approve_edit"}) or type(value["cloud"]) is not bool or type(value.get("approve_edit",False)) is not bool:
             raise ValueError("Некорректное подтверждение")
         req=validate({"text":value["text"],"request_id":value["request_id"]})
         with self.lock:
@@ -257,6 +287,8 @@ class Router:
                 raise ValueError("План поиска устарел; повторите поиск")
             if not self.chat.startup_health["ok"]: raise RuntimeError("Memory integrity failure")
             plan=item[2]
+            mutation=plan.get("mutation")
+            if value.get("approve_edit") and not mutation:raise ValueError("Нет изменения для подтверждения")
             paid=value["cloud"] and not plan["sufficient"]
             if paid:
                 # Single attempt for the approved plan. No auto-retry after an
@@ -268,7 +300,11 @@ class Router:
                     reply=self.cloud.complete(req["text"],plan["context"])
                     result=self.chat.memory_append(req,reply)
             else:
-                result=self.chat.memory_append(req,plan["local"])
+                answer=plan["local"]
+                if mutation and value.get("approve_edit"):
+                    self.advanced.apply(mutation,req["request_id"],req["text"])
+                    answer="Изменение сохранено локально: запись #"+str(mutation["id"])+" · "+mutation["label"]+": "+str(mutation["before"])+" → "+str(mutation["after"])
+                result=self.chat.memory_append(req,answer)
                 self.plans.pop(value["token"],None)
             return {**result,"route":"cloud" if paid else "local"}
 

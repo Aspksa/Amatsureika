@@ -40,6 +40,7 @@ class Workspace:
                     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL,
                     archived INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS work_kind ON work_records(kind,archived,id);
+                CREATE TABLE IF NOT EXISTS work_edit_audit(request_id TEXT PRIMARY KEY, question TEXT NOT NULL, record_id INTEGER NOT NULL, mutation TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS disk_entries (
                     id INTEGER PRIMARY KEY, parent INTEGER REFERENCES disk_entries(id),
                     name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('folder','file')),
@@ -59,7 +60,7 @@ class Workspace:
             rows=db.execute("SELECT * FROM work_records ORDER BY id").fetchall()
             return {"records":[{"id":r["id"],"kind":r["kind"],"fields":json.loads(r["payload"]),"archived":bool(r["archived"]),"updated":r["updated"]} for r in rows]}
 
-    def save_work(self, data):
+    def save_work(self, data, *, expected_updated=None, audit=None):
         if not isinstance(data,dict):
             raise ValueError("Некорректная запись")
         kind=data.get("kind")
@@ -68,11 +69,18 @@ class Workspace:
         with closing(self.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             rid=data.get("id")
+            if audit is not None:
+                done=db.execute("SELECT question,record_id FROM work_edit_audit WHERE request_id=?",(audit["request_id"],)).fetchone()
+                if done:
+                    if done["question"]!=audit["text"] or done["record_id"]!=rid:raise ValueError("Идентификатор уже использован")
+                    return {"id":rid,"duplicate":True}
             old=None
             if rid is not None:
                 old=db.execute("SELECT * FROM work_records WHERE id=? AND kind=?",(ident(rid),kind)).fetchone()
                 if not old:
                     raise ValueError("Запись не найдена")
+            if expected_updated is not None and (not old or old["archived"] or old["updated"]!=expected_updated):
+                raise ValueError("Запись изменилась. Сформируйте новый предварительный просмотр.")
             if "archived" in data:
                 if not old or type(data["archived"]) is not bool:
                     raise ValueError("Некорректный архив")
@@ -118,7 +126,16 @@ class Workspace:
                     db.execute("UPDATE work_records SET payload=?,updated=? WHERE id=?",(payload,now(),rid))
                 else:
                     rid=db.execute("INSERT INTO work_records(kind,payload,updated) VALUES(?,?,?)",(kind,payload,now())).lastrowid
+            if audit is not None:
+                db.execute("INSERT INTO work_edit_audit VALUES(?,?,?,?,?)",(audit["request_id"],audit["text"],rid,json.dumps(audit["mutation"],ensure_ascii=False),now()))
             return {"id":rid}
+
+    def edit_receipt(self,request_id,text):
+        with closing(self.connect()) as db:
+            r=db.execute("SELECT * FROM work_edit_audit WHERE request_id=?",(request_id,)).fetchone()
+            if not r:return None
+            if r["question"]!=text:raise ValueError("Идентификатор уже использован")
+            return json.loads(r["mutation"])
 
     def entry(self,db,rid):
         r=db.execute("SELECT * FROM disk_entries WHERE id=?",(ident(rid),)).fetchone()
