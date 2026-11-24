@@ -22,8 +22,8 @@ def session(data_dir, expected=None):
             with urlopen(url + "main.js", timeout=10) as response:
                 source = response.read().decode("utf-8")
                 assert "ДОЛГОВРЕМЕННАЯ ПАМЯТЬ" not in source
-                assert "/api/chat" in source
-                assert 'class: "satellite-shell", r: 9' in source
+                assert "/api/memory" in source
+                assert 'class: "memory-block"' in source
                 assert 'class: "cluster-shape"' not in source
             with urlopen(url + "api/design", timeout=10) as response:
                 settings = json.load(response)
