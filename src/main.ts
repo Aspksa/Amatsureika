@@ -20,7 +20,7 @@ const key=(i:number,n:number,outer:boolean)=>i+":"+n+":"+outer;
 const counts:number[]=[];
 type ChatCluster={id:number;previous_id:number|null;count:number};
 type ResultSource={source:"memory"|"work"|"file";id:number;title:string};
-type ResultMeta={verified_steps?:PreviewStep[];conflict_pairs?:string[][];search_passes?:number;evidence_status?:string;source_groups?:Record<string,number>;links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
+type ResultMeta={verified_steps?:PreviewStep[];conflict_pairs?:string[][];search_passes?:number;evidence_status?:string;source_groups?:Record<string,number>;links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:VisualStep[];completeness?:Record<string,number>;diff?:{text:string;truncated:boolean};table?:{columns:string[];rows:string[][];total_rows:number}};
 type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string;metadata?:ResultMeta};
 type Snapshot={clusters:ChatCluster[];messages:ChatMessage[];duplicate?:boolean};
 let clusters:ChatCluster[]=[];
@@ -367,7 +367,9 @@ function evidenceGraph(meta:ResultMeta){
 function resultCard(meta:ResultMeta,messageId:number){
  const root=document.createElement("details");root.className="chat-result";const summary=document.createElement("summary");summary.textContent="Источники и инструменты"+(meta.tools?.length?" · "+meta.tools.join(", "):"");root.append(summary);
  if(meta.evidence_status){const p=document.createElement("p");p.textContent=({local_result:"Локальный результат",retrieval_only:"Найдены выдержки, требуется проверка",insufficient:"Недостаточно данных",external_excerpts:"Интернет-выдержки, не проверенные факты"} as Record<string,string>)[meta.evidence_status]??meta.evidence_status;p.textContent+=" · проходов поиска: "+(meta.search_passes??0);root.append(p)}
- if(meta.steps?.length){const p=document.createElement("p");p.textContent=meta.steps.map(s=>s.tool+" · "+s.status).join(" / ");root.append(p)}
+ if(meta.steps?.length){const p=document.createElement("p");p.textContent=meta.steps.map(s=>s.tool+" · "+s.status).join(" / ");root.append(p);const graph=document.createElement("div");graph.className="tool-graph";drawWorkflow(meta.steps,graph);root.append(graph)}
+ if(meta.completeness){const p=document.createElement("p");p.textContent=Object.entries(meta.completeness).map(([k,v])=>k+": "+v).join(" · ");root.append(p)}
+ if(meta.diff){const d=document.createElement("div");d.className="diff-view";for(const line of meta.diff.text.split("\n")){const p=document.createElement("div");p.className=line.startsWith("+")?"diff-add":line.startsWith("-")?"diff-remove":"diff-context";p.textContent=line;d.append(p)}root.append(d);if(meta.diff.truncated){const p=document.createElement("p");p.textContent="Различия показаны частично";root.append(p)}}
  if(meta.verified_steps?.length){const b=document.createElement("button");b.type="button";b.textContent="Сохранить успешный сценарий";b.onclick=async()=>{if(busy)return;const name=prompt("Название проверенного сценария");if(!name?.trim())return;b.disabled=true;try{await agentApi("save",{name:name.trim().slice(0,80),steps:meta.verified_steps});chatStatus.textContent="Сценарий сохранён"}catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка"}finally{b.disabled=false}};root.append(b)}
  for(const h of meta.sources??[]){const b=document.createElement("button");b.type="button";b.textContent=h.title+" · #"+h.id;b.onclick=()=>sourceAction(h);root.append(b)}
  for(const h of meta.web_sources??[]){const div=document.createElement("div"),a=document.createElement("a");div.className="web-evidence";try{if(new URL(h.url).protocol!=="https:")continue}catch{continue}a.href=h.url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=h.title;div.append(a);const p=document.createElement("p");p.textContent=(h.date||"Дата не указана")+" · непроверенная выдержка: "+h.excerpt;div.append(p);root.append(div)}
@@ -790,18 +792,19 @@ byId<HTMLFormElement>("chatSearchForm").onsubmit=async e=>{
   }
  }catch(e){if(run===searchRun)results.textContent=e instanceof Error?e.message:"Ошибка поиска"}
 };
-type AgentStep={id:string;tool:string;month:string;depends:string[]};
+type AgentStep={id:string;tool:string;month:string;depends:string[];condition?:"all_ok"|"any_error"|"always"};
 type AgentRegistry={id:string;title:string;permission:string;month:boolean};
-type AgentResult={draft?:string;steps:{id:string;tool:string;text:string;status:string}[];ok:boolean;snapshot:string};
+type VisualStep={id?:string;tool:string;status?:string;depends?:string[];duration_ms?:number};
+type AgentResult={draft?:string;steps:(VisualStep & {id:string;text:string;status:string})[];completeness?:Record<string,number>;ok:boolean;snapshot:string};
 type AutomationRule={id:string;scenario:string;mode:string;interval_seconds:number;file_id:number|null;enabled:number;status:string;next_check:number;last_job:string};
 type AgentState={rules?:AutomationRule[];registry:AgentRegistry[];scenarios:{id:string;name:string;created:string}[];jobs:{id:string;status:string;due:string;result:AgentResult|null}[];runs:{tool:string;status:string;duration_ms:number;detail:string;created:string}[]};
 const agentDialog=byId<HTMLDialogElement>("agentDialog"),agentOutput=byId("agentOutput"),agentTools=byId<HTMLSelectElement>("agentTools"),agentMonth=byId<HTMLInputElement>("agentMonth"),agentScenarios=byId<HTMLSelectElement>("agentScenarios");
 let agentState:AgentState|null=null,agentBusy=false,agentSteps:AgentStep[]=[];
 async function agentApi<T>(path:string,value:object):Promise<T>{const r=await fetch("/api/agent/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка инструмента");return data as T}
-function showAgentResult(r:AgentResult){agentOutput.textContent=r.steps.map(s=>s.tool+" · "+s.status+"\n"+s.text).join("\n\n")+"\n"+r.snapshot+(r.draft?"\n\n"+r.draft:"")}
+function showAgentResult(r:AgentResult){drawWorkflow(r.steps,byId("agentGraph"));agentOutput.textContent=r.steps.map(s=>s.tool+" · "+s.status+"\n"+s.text).join("\n\n")+"\n"+r.snapshot+(r.draft?"\n\n"+r.draft:"")}
 async function refreshAgent(){
  const state=await agentApi<AgentState>("state",{});agentState=state;
- const selectedTools=new Set(Array.from(agentTools.selectedOptions).map(o=>o.value)),selectedScenario=agentScenarios.value;agentTools.replaceChildren();agentScenarios.replaceChildren();
+ renderCalendar(state);const selectedTools=new Set(Array.from(agentTools.selectedOptions).map(o=>o.value)),selectedScenario=agentScenarios.value;agentTools.replaceChildren();agentScenarios.replaceChildren();
  for(const t of state.registry.filter(t=>t.permission==="read_local"&&t.id!=="summary")){const o=document.createElement("option");o.value=t.id;o.textContent=t.title;o.selected=selectedTools.has(t.id);agentTools.append(o)}
  for(const s of state.scenarios){const o=document.createElement("option");o.value=s.id;o.textContent=s.name;agentScenarios.append(o)}
  if(state.scenarios.some(s=>s.id===selectedScenario))agentScenarios.value=selectedScenario;
@@ -813,15 +816,48 @@ async function refreshAgent(){
  byId("agentPermissions").textContent=state.registry.map(r=>r.title+" — "+(r.permission==="read_local"?"чтение локально":"отдельное подтверждение")).join("\n");
 }
 function makeAgentSteps(){
+ if(editorSteps.length)return editorSteps.map(s=>({...s,depends:[...s.depends]}));
  if(!agentState)throw Error("Реестр не загружен");const selected=Array.from(agentTools.selectedOptions);if(!selected.length)throw Error("Выберите инструменты");
  const steps=selected.map((o,i)=>({id:"s"+(i+1),tool:o.value,month:agentState!.registry.find(t=>t.id===o.value)?.month?agentMonth.value:"",depends:[] as string[]}));
  if(steps.length>1)steps.push({id:"summary",tool:"summary",month:"",depends:steps.map(s=>s.id)});return steps
 }
+let editorSteps:AgentStep[]=[],editorSerial=0,calendarOffset=0;
+function drawWorkflow(steps:VisualStep[],root:HTMLElement){
+ root.replaceChildren();if(!steps.length)return;
+ const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg"),height=steps.length*52+20;
+ svg.setAttribute("viewBox","0 0 520 "+height);svg.setAttribute("role","group");svg.setAttribute("aria-label","Граф зависимостей и состояний");
+ const points=new Map(steps.map((s,i)=>[s.id??String(i),{x:36+(s.depends?.length?80:0),y:30+i*52}]));
+ const node=(tag:string,attrs:Record<string,string>,text?:string)=>{const e=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,v);if(text!==undefined)e.textContent=text;svg.append(e);return e};
+ steps.forEach((s,i)=>{const p=points.get(s.id??String(i))!;for(const id of s.depends??[]){const a=points.get(id);if(a)node("path",{d:"M"+a.x+" "+a.y+" H12 V"+p.y+" H"+p.x,stroke:"#547986",fill:"none","stroke-width":"1"})}});
+ steps.forEach((s,i)=>{const p=points.get(s.id??String(i))!,color=s.status==="ok"?"#77d9c7":s.status==="error"?"#e6a581":s.status==="partial"?"#d9b07b":"#8ba9b9";node("circle",{cx:String(p.x),cy:String(p.y),r:"7",fill:color,tabindex:"0","aria-label":s.tool+" "+(s.status??"план")});node("text",{x:String(p.x+14),y:String(p.y+4),fill:color,"font-size":"12"},s.tool+" · "+(s.status??"план")+(s.duration_ms!==undefined?" · "+s.duration_ms+" мс":""))});root.append(svg)
+}
+function renderEditor(){
+ const root=byId("agentEditor");root.replaceChildren();
+ editorSteps.forEach((s,i)=>{const row=document.createElement("div");row.className="scenario-row";
+ const label=document.createElement("span");label.textContent=s.id+" · "+s.tool;
+ const deps=document.createElement("select");deps.multiple=true;deps.setAttribute("aria-label","Зависимости "+s.id);for(const p of editorSteps.slice(0,i)){const o=document.createElement("option");o.value=p.id;o.textContent=p.id+" "+p.tool;o.selected=s.depends.includes(p.id);deps.append(o)}deps.onchange=()=>{s.depends=Array.from(deps.selectedOptions).map(o=>o.value);drawWorkflow(editorSteps,byId("agentGraph"))};
+ const condition=document.createElement("select");condition.setAttribute("aria-label","Условие "+s.id);for(const [v,t] of [["all_ok","После успеха"],["any_error","При ошибке"],["always","После завершения"]]){const o=document.createElement("option");o.value=v;o.textContent=t;condition.append(o)}condition.value=s.condition??"all_ok";condition.onchange=()=>{s.condition=condition.value as AgentStep["condition"]};
+ const remove=document.createElement("button");remove.type="button";remove.textContent="Удалить";remove.onclick=()=>{editorSteps=editorSteps.filter(p=>p.id!==s.id);for(const p of editorSteps)p.depends=p.depends.filter(id=>id!==s.id);renderEditor()};
+ row.append(label,deps,condition,remove);root.append(row)});drawWorkflow(editorSteps,byId("agentGraph"));
+}
+function renderCalendar(state:AgentState){
+ const root=byId("agentCalendar");root.replaceChildren();const now=new Date(),first=new Date(now.getFullYear(),now.getMonth()+calendarOffset,1),last=new Date(first.getFullYear(),first.getMonth()+1,0);
+ byId("agentCalendarTitle").textContent=first.toLocaleDateString("ru",{month:"long",year:"numeric"});
+ for(const label of ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]){const h=document.createElement("span");h.textContent=label;root.append(h)}
+ for(let n=0;n<(first.getDay()+6)%7;n++)root.append(document.createElement("span"));
+ for(let d=1;d<=last.getDate();d++){const date=new Date(first.getFullYear(),first.getMonth(),d),jobs=state.jobs.filter(j=>new Date(j.due).toDateString()===date.toDateString()),rules=(state.rules??[]).filter(j=>j.enabled&&new Date(j.next_check*1000).toDateString()===date.toDateString());const b=document.createElement("button");b.type="button";b.textContent=String(d)+(jobs.length+rules.length?" · "+(jobs.length+rules.length):"");b.title=date.toLocaleDateString("ru");b.onclick=()=>{byId("agentCalendarDetail").textContent=[...jobs.map(j=>new Date(j.due).toLocaleTimeString("ru")+" · "+j.status+" · "+j.id.slice(0,8)),...rules.map(j=>"Следующая проверка · "+j.mode+" · "+j.status)].join("\n")||"Нет записей"};root.append(b)}
+}
+byId("agentCalendarPrev").onclick=()=>{calendarOffset--;if(agentState)renderCalendar(agentState)};
+byId("agentCalendarNext").onclick=()=>{calendarOffset++;if(agentState)renderCalendar(agentState)};
+byId("agentEditorAdd").onclick=()=>{if(!agentState)return;for(const o of Array.from(agentTools.selectedOptions)){if(editorSteps.length>=12)break;editorSteps.push({id:"e"+(++editorSerial),tool:o.value,month:agentState.registry.find(t=>t.id===o.value)?.month?agentMonth.value:"",depends:[]})}renderEditor()};
+byId("agentEditorSummary").onclick=()=>{if(!editorSteps.length||editorSteps.length>=12)return;editorSteps.push({id:"e"+(++editorSerial),tool:"summary",month:"",depends:editorSteps.map(s=>s.id)});renderEditor()};
+byId("agentEditorClear").onclick=()=>{editorSteps=[];renderEditor()};
+byId("agentPreview").onclick=()=>void agentAction(async()=>{const p=await agentApi<{steps:AgentStep[];layers:string[][];note:string}>("preview",{steps:makeAgentSteps()});drawWorkflow(p.steps,byId("agentGraph"));agentOutput.textContent=p.note+"\n"+p.layers.map((l,i)=>(i+1)+": "+l.join(", ")).join("\n")});
 async function agentAction(action:()=>Promise<void>){if(agentBusy)return;agentBusy=true;try{await action()}catch(e){agentOutput.textContent=e instanceof Error?e.message:"Ошибка"}finally{agentBusy=false}}
 byId("toolAgent").onclick=()=>{closeTools();if(busy)return;const d=new Date();agentMonth.value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");agentDialog.showModal();void agentAction(refreshAgent)};
 byId("agentClose").onclick=()=>agentDialog.close();
 byId("agentRefresh").onclick=()=>void agentAction(refreshAgent);
-byId("agentRun").onclick=()=>void agentAction(async()=>{agentSteps=[];const steps=makeAgentSteps();if(!confirm("Выполнить цепочку:\n"+steps.map(s=>s.tool+(s.depends.length?" ← "+s.depends.join(", "):"")).join("\n")))return;agentOutput.textContent="Выполнение…";const r=await agentApi<AgentResult>("run",{steps});showAgentResult(r);if(r.ok)agentSteps=steps;await refreshAgent()});
+byId("agentRun").onclick=()=>void agentAction(async()=>{agentSteps=[];const steps=makeAgentSteps();await agentApi("preview",{steps});if(!confirm("Выполнить цепочку:\n"+steps.map(s=>s.tool+(s.depends.length?" ← "+s.depends.join(", "):"")).join("\n")))return;agentOutput.textContent="Выполнение…";const r=await agentApi<AgentResult>("run",{steps});showAgentResult(r);if(r.ok)agentSteps=steps;await refreshAgent()});
 byId("agentSave").onclick=()=>void agentAction(async()=>{const name=byId<HTMLInputElement>("agentName").value.trim();if(!name)throw Error("Введите название");if(!agentSteps.length)throw Error("Сначала успешно выполните сценарий");await agentApi("save",{name,steps:agentSteps});await refreshAgent();agentOutput.textContent="Сценарий сохранён"});
 byId("agentReplay").onclick=()=>void agentAction(async()=>{if(!agentScenarios.value)throw Error("Выберите сценарий");showAgentResult(await agentApi<AgentResult>("replay",{id:agentScenarios.value}));await refreshAgent()});
 byId("agentQueue").onclick=()=>void agentAction(async()=>{const value=byId<HTMLInputElement>("agentDue").value;if(!value||!agentScenarios.value)throw Error("Выберите сценарий и время");const due=new Date(value);if(!Number.isFinite(due.getTime()))throw Error("Некорректное время");await agentApi("queue",{scenario:agentScenarios.value,due:due.toISOString()});await refreshAgent();agentOutput.textContent="Задача добавлена в локальную очередь"});
@@ -968,7 +1004,7 @@ function cognitiveFields(){
 cognitiveSelect.onchange=cognitiveFields;
 byId("toolCognitive").onclick=()=>{closeTools();cognitiveFields();cognitiveDialog.showModal()};
 byId("cognitiveClose").onclick=()=>cognitiveDialog.close();
-function drawSeries(values:number[],container:HTMLElement=byId("cognitiveChart")){
+function drawSeries(values:number[],container:HTMLElement=byId("cognitiveChart"),mode="line"){
  container.replaceChildren();if(values.length<2||values.some(v=>!Number.isFinite(v)))return;
  const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");
  svg.setAttribute("viewBox","0 0 600 220");svg.setAttribute("role","img");svg.setAttribute("aria-label","Линейный график фактических наблюдений");
@@ -976,13 +1012,14 @@ function drawSeries(values:number[],container:HTMLElement=byId("cognitiveChart")
  const low=Math.min(...values),high=Math.max(...values),span=high-low||1;
  for(let i=0;i<=4;i++){const y=20+170*i/4,v=high-(high-low)*i/4;node("line",{x1:"65",x2:"585",y1:String(y),y2:String(y),stroke:"#29434f","stroke-width":".8"});node("text",{x:"60",y:String(y+4),fill:"#a7c8c9","font-size":"11","text-anchor":"end"},Number(v.toPrecision(5)).toString())}
  const pts=values.map((v,i)=>[65+520*i/(values.length-1),high===low?105:20+170*(high-v)/span]);
- node("polyline",{points:pts.map(p=>p.join(",")).join(" "),fill:"none",stroke:"#77d9c7","stroke-width":"2","stroke-linejoin":"round"});
+ if(mode==="bar"){const zero=high===low?190:20+170*(high-Math.min(high,Math.max(low,0)))/span;pts.forEach(([x,y])=>node("rect",{x:String(x-Math.min(10,240/values.length)),y:String(Math.min(y,zero)),width:String(Math.min(20,480/values.length)),height:String(Math.max(1,Math.abs(zero-y))),fill:"#77d9c7"}))}else node("polyline",{points:pts.map(p=>p.join(",")).join(" "),fill:"none",stroke:"#77d9c7","stroke-width":"2","stroke-linejoin":"round"});
  if(values.length<=80)pts.forEach(([x,y],i)=>{const point=node("circle",{cx:String(x),cy:String(y),r:"3",fill:"#77d9c7",tabindex:"0"});const title=document.createElementNS(ns,"title");title.textContent="№"+(i+1)+": "+values[i];point.append(title);point.setAttribute("aria-label",title.textContent)});
  node("text",{x:"65",y:"210",fill:"#a7c8c9","font-size":"11"},"1");node("text",{x:"585",y:"210",fill:"#a7c8c9","font-size":"11","text-anchor":"end"},String(values.length));container.append(svg)
 }
 function displayCognitive(result:Record<string,unknown>){
  cognitiveOutput.replaceChildren();byId("cognitiveChart").replaceChildren();
- const values=result.values;if(Array.isArray(values)&&values.every(v=>typeof v==="number"))drawSeries(values as number[]);
+ const values=result.values;if(Array.isArray(values)&&values.every(v=>typeof v==="number")){drawSeries(values as number[]);const toggle=document.createElement("button");toggle.type="button";toggle.textContent="Линия / столбцы";let mode="line";toggle.onclick=()=>{mode=mode==="line"?"bar":"line";drawSeries(values as number[],byId("cognitiveChart"),mode)};cognitiveOutput.append(toggle)}
+ if(Array.isArray(result.options)){const options=result.options as {name:string;expected:number;outcomes:{probability:number;value:number}[]}[];if(options.every(o=>typeof o.name==="string"&&Array.isArray(o.outcomes))){for(const o of options){const d=document.createElement("details"),summary=document.createElement("summary");summary.textContent=o.name+" · ожидаемое "+o.expected;d.append(summary);for(const x of o.outcomes){const p=document.createElement("p");p.textContent=Math.round(x.probability*100)+"% → "+x.value;d.append(p)}cognitiveOutput.append(d)}}}
  const pre=document.createElement("pre");const output={...result};delete output.values;
  pre.textContent=JSON.stringify(output,null,2);cognitiveOutput.append(pre)
 }

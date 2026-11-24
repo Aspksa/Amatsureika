@@ -278,7 +278,7 @@ class Router:
                 data=self.advanced.anomalies();advanced_answer=anomaly_text(data)
                 advanced_sources=[{"source":"work","id":i,"title":a["text"]} for a in data["issues"] for i in a["ids"]]
             elif action=="compare":
-                data=self.advanced.compare(*args);advanced_answer=compare_text(data)
+                data=self.advanced.compare(*args);advanced_answer=compare_text(data);meta["diff"]={"text":data["diff"],"truncated":data["truncated"]}
                 advanced_sources=[{"source":"file","id":f["id"],"title":f["name"]} for f in data["files"]]
             else:
                 mutation=self.advanced.preview(*args)
@@ -301,7 +301,9 @@ class Router:
                             else:
                                 result=self.cognitive.dispatch({"action":"compare","a":a,"b":b,"key":key_match[1].strip()})
                                 parts.append(f"#{a} / #{b}: "+json.dumps(result,ensure_ascii=False)[:4000])
-                        else:parts.append(compare_text(self.advanced.compare(a,b)))
+                        else:
+                            diff=self.advanced.compare(a,b);parts.append(compare_text(diff))
+                            if "diff" not in meta:meta["diff"]={"text":diff["diff"],"truncated":diff["truncated"]}
                     except ValueError as e:parts.append(f"#{a} / #{b}: {e}")
                 advanced_answer="Сравнение вложений:\n"+"\n\n".join(parts)[:12000]
                 meta["tools"].append("compare")
