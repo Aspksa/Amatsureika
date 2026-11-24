@@ -40,3 +40,16 @@ for(const counts of [
  const grown=layout(counts.map((n,i)=>i===smallest?n+1:n),"radial");assert(grown.sectors.every((s,i)=>s.span>0&&(i===0||s.angle>grown.sectors[i-1].angle)));
 }
 console.log("Organic radial sectors and clearance tests passed");
+
+const {conversationLayout}=await import("../public/geometry.js");
+for(const mode of ["radial","compact","hex"]){
+ const empty=conversationLayout([],mode);assert.equal(empty.centers.length,0);
+ const a=conversationLayout([200],mode),b=conversationLayout([200,0],mode);
+ assert.deepEqual(a.point(0,199,false),b.point(0,199,false));
+ for(const n of [2,13,50]){
+  const counts=Array.from({length:n},(_,i)=>i===n-1?0:200),g=conversationLayout(counts,mode),points=[];
+  counts.forEach((count,i)=>{for(let j=0;j<count;j++)points.push({p:g.point(i,j,false),r:3.5});points.push({p:g.point(i,0,true),r:10})});
+  assert(points.every(x=>valid(x.p)));assert.equal(collisions(points),0,`chat ${mode} ${n}`);
+ }
+}
+console.log("Chat cluster stable geometry passed");
