@@ -7,6 +7,10 @@ if not exist "logs" goto :folder_error
 > "logs\startup.log" echo Amatsureika launcher started
 set "PYTHONUTF8=1"
 set "PYTHONUNBUFFERED=1"
+if exist "runtime\python\python.exe" (
+  "runtime\python\python.exe" -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >>"logs\startup.log" 2>&1
+  if not errorlevel 1 goto :use_portable
+)
 py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >>"logs\startup.log" 2>&1
 if not errorlevel 1 goto :use_py
 python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >>"logs\startup.log" 2>&1
@@ -14,6 +18,10 @@ if not errorlevel 1 goto :use_python
 echo ERROR: Python 3.10 or newer is required. Install Python and enable PATH.
 >>"logs\startup.log" echo ERROR: Python 3.10 or newer is required.
 goto :failed
+:use_portable
+"runtime\python\python.exe" launcher.py %*
+set "RC=%errorlevel%"
+goto :finish
 :use_py
 py -3 launcher.py %*
 set "RC=%errorlevel%"

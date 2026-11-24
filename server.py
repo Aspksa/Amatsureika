@@ -25,6 +25,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.router = router
         super().__init__(*args, **kwargs)
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(60)
+
     def send_json(self, value, status=200):
         data = json.dumps(value).encode("utf-8")
         self.send_response(status)

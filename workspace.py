@@ -219,21 +219,22 @@ class Workspace:
         blob=uuid4().hex
         target=self.files/blob
         try:
+            # Do not hold a SQLite writer reservation while a slow upload arrives.
+            with target.open("xb") as f:
+                remaining=size
+                while remaining:
+                    chunk=stream.read(min(remaining,65536))
+                    if not chunk or len(chunk)>remaining:
+                        raise ValueError("Загрузка прервана")
+                    f.write(chunk)
+                    remaining-=len(chunk)
+                f.flush()
+                import os
+                os.fsync(f.fileno())
             with closing(self.connect()) as db, db:
                 db.execute("BEGIN IMMEDIATE")
                 self.folder(db,parent)
                 self.unique(db,parent,title)
-                with target.open("xb") as f:
-                    remaining=size
-                    while remaining:
-                        chunk=stream.read(min(remaining,65536))
-                        if not chunk:
-                            raise ValueError("Загрузка прервана")
-                        f.write(chunk)
-                        remaining-=len(chunk)
-                    f.flush()
-                    import os
-                    os.fsync(f.fileno())
                 rid=db.execute("INSERT INTO disk_entries(parent,name,kind,blob,size,updated) VALUES(?,?,'file',?,?,?)",(parent,title,blob,size,now())).lastrowid
             return {"id":rid}
         except BaseException:

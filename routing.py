@@ -82,7 +82,7 @@ class Router:
         self.knowledge=Knowledge(chat,cloud)
         self.cognitive=CognitiveTools(workspace,self.knowledge,self.agent,extract)
         self.lock=threading.RLock()
-        self.plans=OrderedDict();self.next_index=0;self.agent.index_refresh=self.background_index
+        self.plans=OrderedDict();self.inflight=set();self.web_inflight=set();self.next_index=0;self.agent.index_refresh=self.background_index
         self.fts=True
         try:
             with closing(chat.connect()) as db, db:
@@ -420,8 +420,11 @@ class Router:
         with self.lock:
             now=time.monotonic()
             for k in list(self.plans):
-                if now-self.plans[k][0]>PLAN_TTL: del self.plans[k]
-            while len(self.plans)>=64:self.plans.popitem(last=False)
+                if now-self.plans[k][0]>PLAN_TTL and k not in self.web_inflight: del self.plans[k]
+            while len(self.plans)>=64:
+                victim=next((k for k in self.plans if k not in self.web_inflight),None)
+                if victim is None:raise RuntimeError("Слишком много активных планов")
+                del self.plans[victim]
             self.plans[plan["token"]]=(now,value,plan)
         return plan
 
@@ -436,13 +439,21 @@ class Router:
 
     def authorize_web(self,value):
         if not isinstance(value,dict) or set(value)!={"token","query","action","confirm"} or value["confirm"] is not True:raise ValueError("Нужно подтверждение интернета")
+        if not isinstance(value["token"],str):raise ValueError("Некорректный план")
         with self.lock:
             item=self.plans.get(value["token"])
             if not item or time.monotonic()-item[0]>PLAN_TTL:raise ValueError("План устарел")
             plan=item[2];offer=plan.get("web_offer")
             if not offer or value["query"]!=offer["query"] or value["action"]!=offer["action"]:raise ValueError("Запрос изменился")
             plan["web_offer"]=None # one attempt; no automatic external retry
+            self.web_inflight.add(value["token"])
+        try:
             data=self.web.dispatch({"action":offer["action"],"query":offer["query"],"confirm":True})
+        except BaseException:
+            with self.lock:self.web_inflight.discard(value["token"])
+            raise
+        with self.lock:
+            self.web_inflight.discard(value["token"])
             sources=web_evidence(data);meta=plan["metadata"];meta["web_sources"]=sources;meta["tools"].append("web")
             conflicts=possible_conflicts(plan["hits"],sources)
             plan["conflicts"]=(plan["conflicts"]+conflicts)[:6]
@@ -466,22 +477,26 @@ class Router:
         if not isinstance(value,dict) or set(value) not in ({"token","request_id","text","cloud"},{"token","request_id","text","cloud","approve_edit"}) or type(value["cloud"]) is not bool or type(value.get("approve_edit",False)) is not bool:
             raise ValueError("Некорректное подтверждение")
         req=validate({"text":value["text"],"request_id":value["request_id"]})
+        existing=self.chat.existing_request(req)
+        if existing:return existing
         with self.lock:
-            existing=self.chat.existing_request(req)
-            if existing: return existing
-            if not isinstance(value["token"],str): raise ValueError("Некорректный план")
+            if req["request_id"] in self.inflight:raise RuntimeError("Запрос уже выполняется")
+            if len(self.inflight)>=4:raise RuntimeError("Слишком много активных запросов")
+            if not isinstance(value["token"],str):raise ValueError("Некорректный план")
+            if value["token"] in self.web_inflight:raise RuntimeError("Интернет-запрос ещё выполняется")
             item=self.plans.get(value["token"])
             if not item or time.monotonic()-item[0]>PLAN_TTL or item[1]!=req:
                 raise ValueError("План поиска устарел; повторите поиск")
-            if not self.chat.startup_health["ok"]: raise RuntimeError("Memory integrity failure")
-            plan=item[2]
-            mutation=plan.get("mutation")
+            if not self.chat.startup_health["ok"]:raise RuntimeError("Memory integrity failure")
+            plan=item[2];mutation=plan.get("mutation")
             if value.get("approve_edit") and not mutation:raise ValueError("Нет изменения для подтверждения")
             paid=value["cloud"] and not plan["sufficient"]
+            # Reserve request and consume the exact plan before any external I/O.
+            self.inflight.add(req["request_id"]);del self.plans[value["token"]]
+        try:
+            existing=self.chat.existing_request(req)
+            if existing:return existing
             if paid:
-                # Single attempt for the approved plan. No auto-retry after an
-                # ambiguous transport error; the next plan requires consent again.
-                del self.plans[value["token"]]
                 with self.cloud.send_lock:
                     existing=self.chat.existing_request(req)
                     if existing:return existing
@@ -495,8 +510,10 @@ class Router:
                     answer="Изменение сохранено локально: запись #"+str(mutation["id"])+" · "+mutation["label"]+": "+str(mutation["before"])+" → "+str(mutation["after"])
                 meta=plan["metadata"];meta["warnings"]+=verify_reply(answer,meta)
                 result=self.chat.memory_append(req,answer,meta)
-                self.plans.pop(value["token"],None)
             return {**result,"route":"cloud" if paid else "local"}
+        finally:
+            with self.lock:self.inflight.discard(req["request_id"])
+
 
 def calculate(value):
     if not isinstance(value,dict) or set(value)!={"expression"}:
