@@ -122,3 +122,44 @@ main{height:calc(100dvh - 58px);position:relative}
 .arrived-error .core-ring,.arrived-error .cloud-shell{stroke:#dd9292!important;filter:drop-shadow(0 0 3px #d78383)!important}
 .paused #traffic{display:none}
 @media(prefers-reduced-motion:reduce){#traffic{display:none}#core .core-ring,#cloudIcon .cloud-shell,.memory-block{transition:none}}
+
+/* Functional orbit: compact contour icons, no placeholder modules. */
+.functional-icon{cursor:pointer;outline:none}
+.orbit-hit{fill:transparent;stroke:none}
+.functional-icon .cloud-shell{fill:#091923;stroke:#718b9a;stroke-width:.8}
+.functional-icon .cloud-mark{stroke:#9bb7c4;stroke-width:.9;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.functional-icon:hover .cloud-shell,.functional-icon:focus-visible .cloud-shell{stroke:#a9e1d8;stroke-width:1.4}
+.functional-icon:hover .cloud-mark,.functional-icon:focus-visible .cloud-mark{stroke:#c6eee4}
+#cloudIcon.cloud-connected .cloud-shell{stroke:#70d4b5}
+#panel:not([hidden]){position:fixed;inset:50% auto auto 50%;transform:translate(-50%,-50%);width:min(520px,calc(100% - 28px));max-height:85dvh;height:auto;overflow:auto;z-index:20}
+.workspace-dialog{position:fixed;inset:0;margin:auto;width:min(980px,calc(100% - 28px));max-height:88dvh;overflow:auto;padding:24px;border:1px solid #334e5b;border-radius:16px;background:#0b1a24;color:#d1e3e8;box-shadow:0 18px 80px #0008;font:13px system-ui,sans-serif}
+.workspace-dialog::backdrop{background:#02080dbb;backdrop-filter:blur(5px)}
+.workspace-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.workspace-heading h2{margin:0;font-size:21px;font-weight:600}.workspace-dialog h3{font-size:14px;margin:12px 0;color:#a9d1d2}
+.workspace-dialog button,#settingsClose{border:1px solid #304a57;background:#102632;color:#bcd4dc;border-radius:7px;padding:7px 11px;cursor:pointer}
+.workspace-dialog button:hover{border-color:#79b8b2}.workspace-dialog button:disabled{opacity:.4;cursor:default}
+.workspace-tabs,.workspace-toolbar,.workspace-actions,.disk-crumbs{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.workspace-tabs{margin:20px 0 12px}.workspace-tabs .active{background:#1a3e44;border-color:#589b96;color:#bdeee4}
+.workspace-toolbar{padding:10px 0}.workspace-toolbar h3{margin:0}.workspace-toolbar span{color:#7fa8b3;font-size:12px}
+.workspace-dialog input:not([type=checkbox]):not([type=file]),.workspace-dialog select{background:#08141e;border:1px solid #314b59;border-radius:7px;color:#d4e7eb;padding:9px;min-width:0}
+.workspace-check{display:flex;align-items:center;gap:5px}
+.workspace-table{overflow:auto;max-height:36dvh}
+.workspace-table table{width:100%;border-collapse:collapse;text-align:left}
+.workspace-table th,.workspace-table td{padding:10px;border-bottom:1px solid #213745;vertical-align:top;overflow-wrap:anywhere}
+.workspace-table th{color:#82aeb9;font-weight:500;position:sticky;top:0;background:#0b1a24}
+.workspace-table .archived-row{opacity:.65}
+.workspace-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px}
+.workspace-fields label{display:flex;flex-direction:column;gap:5px;color:#a6c1cb;font-size:12px}
+.workspace-empty{padding:24px 0;color:#7895a4}
+#workStatus,#diskStatus{color:#92bdc4;font-size:12px;overflow-wrap:anywhere}
+.disk-crumbs{margin:14px 0 0}.disk-crumbs button{background:none;border:0;padding:4px;color:#89cec2}
+.disk-upload{display:inline-flex;align-items:center;gap:6px;color:#bcd4dc;font-size:12px}
+.disk-upload input{max-width:190px;font-size:11px}
+.disk-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #213745;flex-wrap:wrap}
+.disk-row .disk-name{flex:1;min-width:150px;text-align:left;overflow-wrap:anywhere;background:transparent;border:0;color:#c2dde1}
+.disk-row small{color:#85a3af}
+.disk-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.disk-tiles .disk-row{border:1px solid #29434f;border-radius:9px;padding:12px;flex-direction:column;align-items:stretch}
+#diskPreview{padding:12px;border:1px solid #29434f;border-radius:8px;margin-top:12px}
+#diskPreviewText{white-space:pre-wrap;overflow-wrap:anywhere;max-height:30dvh;overflow:auto}
+@media(max-width:600px){.workspace-dialog{padding:14px}.workspace-dialog button{font-size:11px}.workspace-table th,.workspace-table td{padding:7px}.disk-row .disk-name{min-width:110px}}

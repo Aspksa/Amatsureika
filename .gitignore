@@ -14,3 +14,7 @@ data/cloud.key
 data/cloud.tmp
 
 public/flow.js
+
+/data/Документы/
+
+public/workspace.js

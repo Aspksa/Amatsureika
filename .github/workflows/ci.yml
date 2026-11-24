@@ -26,11 +26,12 @@ jobs:
       - run: npm test
       - run: node tests/geometry.mjs
       - run: node tests/flow.mjs
-      - run: python -m py_compile server.py launcher.py design_store.py chat_store.py cloud_client.py
+      - run: python -m py_compile server.py launcher.py design_store.py chat_store.py cloud_client.py workspace.py
       - run: python tests/smoke.py
       - run: python tests/chat_smoke.py
       - run: python tests/memory_health.py
       - run: python tests/block_cloud.py
+      - run: python tests/workspace_smoke.py
       - name: Upload startup log
         if: always()
         uses: actions/upload-artifact@v4

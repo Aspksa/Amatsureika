@@ -1,7 +1,9 @@
 import argparse
 import json
 import sqlite3
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, quote
+from workspace import Workspace, LIMIT
+import shutil
 from chat_store import ChatStore
 from cloud_client import Cloud, CloudError
 from uuid import UUID
@@ -12,10 +14,11 @@ from pathlib import Path
 import webbrowser
 
 class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, store, chat, cloud, **kwargs):
+    def __init__(self, *args, store, chat, cloud, workspace, **kwargs):
         self.store = store
         self.chat = chat
         self.cloud = cloud
+        self.workspace = workspace
         super().__init__(*args, **kwargs)
 
     def send_json(self, value, status=200):
@@ -29,6 +32,30 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path in ("/api/work","/api/disk","/api/disk/download"):
+            if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
+                return self.send_json({"error":"Invalid host"},403)
+            try:
+                query=parse_qs(urlsplit(self.path).query)
+                if path=="/api/work":
+                    return self.send_json(self.workspace.work())
+                if path=="/api/disk":
+                    return self.send_json(self.workspace.disk(int(query["parent"][0]) if "parent" in query else None, query.get("trash")==["1"]))
+                file,title,size=self.workspace.download(int(query["id"][0]))
+                with file.open("rb") as f:
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/octet-stream")
+                    self.send_header("Content-Disposition","attachment; filename*=UTF-8''"+quote(title,safe=""))
+                    self.send_header("Content-Length",str(size))
+                    self.send_header("X-Content-Type-Options","nosniff")
+                    self.send_header("Cache-Control","no-store")
+                    self.end_headers()
+                    shutil.copyfileobj(f,self.wfile)
+                return
+            except (ValueError,TypeError,KeyError) as exc:
+                return self.send_json({"error":str(exc)},400)
+            except (sqlite3.Error,OSError):
+                return self.send_json({"error":"Локальное хранилище недоступно"},503)
         if path in ("/api/memory","/api/cloud/status"):
             if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                 return self.send_json({"error":"Invalid host"},403)
@@ -63,18 +90,36 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
             return self.send_json({"error": "Invalid origin"}, 403)
+        if path == "/api/disk/upload":
+            if self.headers.get_content_type()!="application/octet-stream":
+                return self.send_json({"error":"Expected binary file"},415)
+            try:
+                query=parse_qs(urlsplit(self.path).query)
+                size=int(self.headers.get("Content-Length","-1"))
+                if not 0<=size<=LIMIT:
+                    raise ValueError("Лимит файла 25 МиБ")
+                self.connection.settimeout(45)
+                return self.send_json(self.workspace.upload(int(query["parent"][0]) if "parent" in query else None,query["name"][0],self.rfile,size))
+            except (ValueError,KeyError,TypeError) as exc:
+                return self.send_json({"error":str(exc)},400)
+            except (sqlite3.Error,OSError):
+                return self.send_json({"error":"Загрузка не завершена"},503)
         if self.headers.get_content_type() != "application/json":
             return self.send_json({"error": "Expected JSON"}, 415)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key") else 4096):
+            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
+            if path == "/api/work":
+                return self.send_json(self.workspace.save_work(value))
+            if path == "/api/disk":
+                return self.send_json(self.workspace.disk_action(value))
             if path == "/api/cloud/key":
                 return self.send_json(self.cloud.save_key(value))
             if path == "/api/cloud/models":
@@ -103,8 +148,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"error":str(exc)},502)
         except (sqlite3.Error, RuntimeError, OSError):
             self.send_json({"error": "Local memory unavailable"}, 503)
-        except (ValueError, TypeError, OverflowError):
-            self.send_json({"error": "Invalid settings"}, 400)
+        except (ValueError, TypeError, OverflowError) as exc:
+            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk") else "Invalid settings"}, 400)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -112,9 +157,9 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent / "public"
-    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js")):
+    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js", "workspace.js")):
         raise SystemExit("Build the frontend first: npm run build")
-    with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=DesignStore(args.data_dir / "amatsureika.db"), chat=ChatStore(args.data_dir / "amatsureika.db"), cloud=Cloud(args.data_dir / "amatsureika.db"))) as server:
+    with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=DesignStore(args.data_dir / "amatsureika.db"), chat=ChatStore(args.data_dir / "amatsureika.db"), cloud=Cloud(args.data_dir / "amatsureika.db"), workspace=Workspace(args.data_dir / "amatsureika.db"))) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
         print(url, flush=True)
         if not args.no_browser:

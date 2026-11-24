@@ -1,3 +1,4 @@
+import {setupWorkspace} from "./workspace.js";
 import {runQuietFlow, particleAt, PARTICLES, type Leg} from "./flow.js";
 import {ClusterIndex, directedBlockLayout, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
 const NS="http://www.w3.org/2000/svg";
@@ -341,3 +342,10 @@ byId("cloudRemove").onclick=()=>void cloudAction("key",{key:"",persist:false});
 byId("cloudLoad").onclick=()=>void cloudAction("models",{});
 byId("cloudConnect").onclick=()=>void cloudAction("connect",{model:cloudModels.value});
 void cloudAction("status");
+
+function bindOrbit(id:string,open:()=>void){
+ const icon=group(id);icon.addEventListener("click",open);icon.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open()}});
+}
+setupWorkspace(bindOrbit);
+bindOrbit("settingsIcon",()=>{if(panel.hidden)toggle.click();byId("settingsClose").focus()});
+byId("settingsClose").onclick=()=>{if(!panel.hidden)toggle.click()};
