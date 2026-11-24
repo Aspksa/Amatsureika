@@ -68,3 +68,20 @@ main{height:calc(100dvh - 58px);position:relative}
 @media(max-width:720px){main:has(#chat:not([hidden])){flex-direction:column}main:has(#chat:not([hidden])) #stage{visibility:visible;flex:1;min-height:0}#chat:not([hidden]){position:relative;inset:auto;width:100%;height:49%;min-height:0;padding:10px 18px 12px}#chat #messages{padding-top:8px}#chat .chat-heading{font-size:10px}#chat .chat-heading small{margin-top:3px}.map-search{top:5px;left:8px;width:140px}.map-search input{padding:6px 8px;font-size:10px}.zoom{bottom:5px;right:5px}}
 
 .cluster-born{animation:cluster-appear .9s ease-out both}@keyframes cluster-appear{0%{opacity:0}100%{opacity:1}}
+
+/* Living Memory 2.0 — no chat cards or sector outlines. */
+#chat,#messages,#messages p{border:0;background:transparent;box-shadow:none}
+#chat .chat-input{border:0;box-shadow:none;background:transparent}
+#chat .chat-input:focus-within{background:transparent;box-shadow:0 1px #5ccbb855}
+.memory-summary{fill:none;stroke:currentColor;stroke-linecap:round;stroke-width:3.5;opacity:.72;cursor:pointer}
+.memory-summary.archive{opacity:.42}
+#brain .dot:not(.hot):not(.chosen){opacity:calc(.32 + var(--fill-level,.0)*.28)}
+#brain .dot.archive:not(.chosen){opacity:.32;animation:none;filter:none}
+#brain .satellite.archive .satellite-shell{stroke-opacity:.38}
+#brain .satellite:not(.archive) .satellite-shell{stroke-opacity:calc(.42 + var(--fill-level,0)*.5)}
+.request-pulse{fill:#8dffe1}.reply-pulse{fill:#a9c8ff;filter:drop-shadow(0 0 5px #80a9ff)}
+.trail{filter:none}.energy-wave{fill:none;stroke:#70d9c6;stroke-width:.8;pointer-events:none}
+.memory-flow #core .core-ring{stroke:#adffed;filter:drop-shadow(0 0 8px #64dbc5)}
+#core .core-ring{transition:stroke .5s,filter .5s}
+#memoryHealth{font:10px/1.5 system-ui,sans-serif;color:#95b2ba}
+@media(prefers-reduced-motion:reduce){#core .core-ring{transition:none}}
