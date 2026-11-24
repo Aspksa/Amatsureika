@@ -7,6 +7,7 @@ from work_import import Importer
 from web_research import WebResearch
 from knowledge_store import Knowledge
 from cognitive_tools import CognitiveTools
+from chat_intelligence import intent as chat_intent, normalize_request, bounded_context, web_evidence, possible_conflicts, verify_reply
 from evidence import rank as sparse_rank, evidence_links, missing_terms
 import ast
 from decimal import Decimal, localcontext, DecimalException
@@ -205,16 +206,20 @@ class Router:
 
     def plan(self,value):
         value=validate(value)
-        q=value["text"]
+        original=value["text"]
+        q=normalize_request(original)
+        hints=chat_intent(q)
+        meta={"style":hints["style"],"tools":[],"warnings":[]}
         attachment_ids=list(dict.fromkeys(int(x) for x in re.findall(r"(?m)^\[Документ #(\d{1,12})\]$",q)))
         if len(attachment_ids)>3:raise ValueError("До трёх вложений")
         question=re.sub(r"(?m)^\[Документ #\d{1,12}\]$","",q).strip()
         task=parse_command(q) if not attachment_ids else None
+        if task and task[0]=="edit" and q!=original:task=None # never infer a mutation from indirect phrasing
         advanced_answer=None;advanced_sources=[];mutation=None
         with closing(self.chat.connect()) as db:
             previous=db.execute("SELECT text FROM chat_messages WHERE role='user' AND request_id!=? ORDER BY id DESC LIMIT 1",(value["request_id"],)).fetchone()
         agent_steps=agent_parse(q,previous[0] if previous else None) if not task and not attachment_ids else None
-        receipt=self.workspace.edit_receipt(value["request_id"],q)
+        receipt=self.workspace.edit_receipt(value["request_id"],original)
         if receipt:
             advanced_answer="Изменение уже сохранено: запись #"+str(receipt["id"])+" · "+receipt["label"]
         elif task:
@@ -233,18 +238,46 @@ class Router:
                 advanced_answer="Изменение не выполнено: требуется подтверждение."
                 advanced_sources=[{"source":"work","id":mutation["id"],"title":mutation["label"]}]
         # Explicit deterministic analytical commands, before generic retrieval.
+        if advanced_answer is None and attachment_ids and re.match(r"^(?:сравни|сопоставь)\b",question,re.I):
+            if len(attachment_ids)<2:
+                advanced_answer="Для сравнения прикрепите минимум два документа."
+            else:
+                parts=[]
+                for a,b in zip(attachment_ids,attachment_ids[1:]):
+                    try:parts.append(compare_text(self.advanced.compare(a,b)))
+                    except ValueError as e:parts.append(f"#{a} / #{b}: {e}")
+                advanced_answer="Сравнение вложений:\n"+"\n\n".join(parts)[:12000]
+                meta["tools"].append("compare")
+        elif advanced_answer is None and attachment_ids and re.match(r"^(?:проанализируй|изучи|прочитай)\b",question,re.I):
+            parts=[]
+            for i in attachment_ids:
+                try:
+                    out=self.cognitive.dispatch({"action":"document","file":i})
+                    parts.append(f"#{i} {out['title']}: {out['words']} слов, {out['lines']} строк. Кандидаты фактов: "+ "; ".join(x["subject"]+": "+x["value"] for x in out["candidate_facts"][:10]))
+                except ValueError as e:parts.append(f"#{i}: {e}")
+            # Structure is evidence, not a substitute for semantic analysis.
+            meta["tools"].append("document")
+            meta["document_summary"]="\n".join(parts)[:3000]
         if advanced_answer is None and not attachment_ids:
+            calc=re.fullmatch(r"(?:посчитай|вычисли|сколько будет)\s+(.+)",q,re.I)
+            if calc and re.fullmatch(r"[0-9.,+*/() ×÷−-]+[?]?",calc[1]):
+                expression=calc[1].rstrip("?")
+                out=calculate({"expression":expression})
+                advanced_answer="Локальный расчёт: "+expression+" = "+out["result"]
+                meta["tools"].append("calculator")
             numeric=re.fullmatch(r"(?:статистика|анализ чисел)\s*:\s*([-+0-9.,;\s]+)",q,re.I)
             if numeric:
                 try:values=[float(x.replace(",",".")) for x in re.split(r"[;\s]+",numeric[1].strip())]
                 except ValueError:raise ValueError("Разделяйте числа пробелом или точкой с запятой")
                 out=self.cognitive.dispatch({"action":"stats","values":values})
+                meta["tools"].append("stats");meta["series"]=out["values"]
                 advanced_answer="Локальная статистика:\n"+"\n".join(f"{k}: {out[k]:.6g}" for k in ("count","sum","mean","median","min","max","stdev","slope_per_observation","next_linear_estimate"))+"\n"+out["note"]
             elif re.fullmatch(r"диагностика инструментов[?.]?",q,re.I):
                 out=self.cognitive.dispatch({"action":"performance"})
                 advanced_answer="Диагностика инструментов:\n"+"\n".join(f"{r['tool']} · {r['status']} · {r['n']} запусков · {r['avg_ms']:.1f} мс" for r in out["metrics"][:50])+"\n"+out["note"]
         if agent_steps and advanced_answer is None:
             run=self.agent.run(agent_steps)
+            meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{"tool":s["tool"],"status":s["status"]} for s in run["steps"]]
             advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
             advanced_sources=[h for s in run["steps"] for h in s["sources"]]
         tool=command(q) if advanced_answer is None and not attachment_ids else None
@@ -269,6 +302,8 @@ class Router:
                 hits.append({**h,"message_id":None,"text":"Источник локального инструмента","updated":datetime.now(timezone.utc).isoformat(),"age_days":0,"coverage":1,"matched":[]})
                 if len(hits)>=8:break
         if report is not None:
+            meta["tools"].append(report["tool"])
+            meta["table"]={"columns":report["columns"],"rows":report["rows"][:50],"total_rows":report["total_rows"]}
             count_answer=report_text(report)
             hits=[{**h,"message_id":None,"text":"Источник учтён в локальном отчёте","updated":report["generated"],"age_days":0,"coverage":1,"matched":[]} for h in report["sources"]]
         if count_match:
@@ -295,6 +330,8 @@ class Router:
         links=evidence_links(hits) if count_answer is None else []
         missing=missing_terms(tokens(question),hits) if count_answer is None else []
         context_parts=[]
+        if meta.get("document_summary"):context_parts.append("[Структурный анализ вложений; кандидаты, не факты] "+meta["document_summary"])
+        if hints["style"]!="normal":context_parts.append("[Пожелание пользователя] "+("Краткий ответ." if hints["style"]=="short" else "Подробный ответ с проверяемыми основаниями."))
         for h in hits:
             part=f"[{h['source']} #{h['id']}; {h['title']}; дата {h['updated'][:10]}] {h['text']}"
             if len("\n".join(context_parts+[part]))>CONTEXT_LIMIT: break
@@ -303,11 +340,11 @@ class Router:
             for part in self.knowledge.context(question):
                 if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
             with closing(self.chat.connect()) as db:
-                recent=db.execute("SELECT role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT 4",(value["request_id"],)).fetchall()[::-1]
+                recent=db.execute("SELECT role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT ?",(value["request_id"],8 if hints["style"]=="deep" else 4)).fetchall()[::-1]
             for r in recent:
                 part="[Недавний диалог; "+r["role"]+"] "+r["text"][:400]
                 if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
-        context="\n".join(context_parts)
+        context=bounded_context(context_parts,CONTEXT_LIMIT)
         lines=[f"[{h['source']} #{h['id']}] {h['title']} ({h['updated'][:10]}): {h['text']}" for h in hits]
         local=("Найдено в локальной памяти (цитаты, не проверенные факты):\n"+"\n\n".join(lines)) if hits else "Недостаточно данных в локальной памяти. Запрос сохраню; для рассуждения можно явно разрешить Cloud.ru."
         if hits and not sufficient: local="Локальный поиск: найденные сведения могут быть неполными или устаревшими.\n"+"\n\n".join(lines)
@@ -317,7 +354,9 @@ class Router:
         else:
             if missing:local+="\nБез точного подтверждения в найденных выдержках: "+", ".join(missing)+"."
             if links:local+="\nПересечения источников (общие слова, не причинность): "+"; ".join(x["from"]+" ↔ "+x["to"]+": "+", ".join(x["terms"]) for x in links[:4])
-        plan={"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation,"missing":missing,"links":links}
+        if meta.get("document_summary") and count_answer is None:local=meta["document_summary"]+"\n\n"+local
+        meta["sources"]=[{"source":h["source"],"id":h["id"],"title":h["title"]} for h in hits[:8]]
+        plan={"web_offer":hints["web"] if not mutation and not attachment_ids else None,"metadata":meta,"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation,"missing":missing,"links":links}
         with self.lock:
             now=time.monotonic()
             for k in list(self.plans):
@@ -325,6 +364,29 @@ class Router:
             while len(self.plans)>=64:self.plans.popitem(last=False)
             self.plans[plan["token"]]=(now,value,plan)
         return plan
+
+    def authorize_web(self,value):
+        if not isinstance(value,dict) or set(value)!={"token","query","action","confirm"} or value["confirm"] is not True:raise ValueError("Нужно подтверждение интернета")
+        with self.lock:
+            item=self.plans.get(value["token"])
+            if not item or time.monotonic()-item[0]>PLAN_TTL:raise ValueError("План устарел")
+            plan=item[2];offer=plan.get("web_offer")
+            if not offer or value["query"]!=offer["query"] or value["action"]!=offer["action"]:raise ValueError("Запрос изменился")
+            plan["web_offer"]=None # one attempt; no automatic external retry
+            data=self.web.dispatch({"action":offer["action"],"query":offer["query"],"confirm":True})
+            sources=web_evidence(data);meta=plan["metadata"];meta["web_sources"]=sources;meta["tools"].append("web")
+            conflicts=possible_conflicts(plan["hits"],sources)
+            plan["conflicts"]=(plan["conflicts"]+conflicts)[:6]
+            parts=["[Интернет-источник; непроверенная выдержка; "+p["url"]+"; дата "+(p["date"] or "не указана")+"] "+p["title"]+" "+p["excerpt"] for p in sources]
+            plan["context"]=bounded_context(parts+[plan["context"]],CONTEXT_LIMIT)
+            # No hallucinated synthesis offline. Preserve local results and show excerpts.
+            plan["local"]+="\n\nИнтернет-результаты (не проверенные утверждения):\n"+"\n\n".join(parts)
+            if not sources:plan["local"]+="\nНет доступных выдержек."
+            if conflicts:plan["local"]+="\n"+"\n".join(conflicts)
+            plan["sufficient"]=False
+            # Allow time for the subsequent independent cloud consent.
+            self.plans[value["token"]]=(time.monotonic(),item[1],plan)
+            return plan
 
     def execute(self,value,emit=None):
         if not isinstance(value,dict) or set(value) not in ({"token","request_id","text","cloud"},{"token","request_id","text","cloud","approve_edit"}) or type(value["cloud"]) is not bool or type(value.get("approve_edit",False)) is not bool:
@@ -350,13 +412,15 @@ class Router:
                     existing=self.chat.existing_request(req)
                     if existing:return existing
                     reply=self.cloud.complete_stream(req["text"],plan["context"],emit) if emit is not None else self.cloud.complete(req["text"],plan["context"])
-                    result=self.chat.memory_append(req,reply)
+                    meta=plan["metadata"];meta["warnings"]=verify_reply(reply,meta)
+                    result=self.chat.memory_append(req,reply,meta)
             else:
                 answer=plan["local"]
                 if mutation and value.get("approve_edit"):
                     self.advanced.apply(mutation,req["request_id"],req["text"])
                     answer="Изменение сохранено локально: запись #"+str(mutation["id"])+" · "+mutation["label"]+": "+str(mutation["before"])+" → "+str(mutation["after"])
-                result=self.chat.memory_append(req,answer)
+                meta=plan["metadata"];meta["warnings"]=verify_reply(answer,meta)
+                result=self.chat.memory_append(req,answer,meta)
                 self.plans.pop(value["token"],None)
             return {**result,"route":"cloud" if paid else "local"}
 

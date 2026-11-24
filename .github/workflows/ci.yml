@@ -26,7 +26,7 @@ jobs:
       - run: npm test
       - run: node tests/geometry.mjs
       - run: node tests/flow.mjs
-      - run: python -m py_compile server.py launcher.py design_store.py chat_store.py cloud_client.py workspace.py routing.py tool_engine.py advanced_tools.py agent_engine.py report_export.py work_import.py evidence.py web_research.py knowledge_store.py cognitive_tools.py
+      - run: python -m py_compile server.py launcher.py design_store.py chat_store.py cloud_client.py workspace.py routing.py tool_engine.py advanced_tools.py agent_engine.py report_export.py work_import.py evidence.py web_research.py knowledge_store.py cognitive_tools.py chat_intelligence.py
       - run: python tests/smoke.py
       - run: python tests/chat_smoke.py
       - run: python tests/memory_health.py
@@ -43,6 +43,7 @@ jobs:
       - run: python tests/web_research_smoke.py
       - run: python tests/knowledge_smoke.py
       - run: python tests/cognitive_tools_smoke.py
+      - run: python tests/chat_intelligence_smoke.py
       - name: Upload startup log
         if: always()
         uses: actions/upload-artifact@v4
