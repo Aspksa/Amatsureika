@@ -68,3 +68,10 @@ for(const total of [10000,50000,100000]){
 assert.deepEqual(curvedPoint({x:0,y:0},{x:10,y:0},0),{x:0,y:0});
 assert.deepEqual(curvedPoint({x:0,y:0},{x:10,y:0},1),{x:10,y:0});
 assert(curvedPoint({x:0,y:0},{x:10,y:0},.5).y>0);
+
+const {directedBlockLayout}=await import("../public/geometry.js");
+for(const count of [1,100,200,2000,20000]){
+ const a=directedBlockLayout(count,"radial"),b=directedBlockLayout(count+1,"radial");
+ assert(a.centers.every(p=>valid(p)&&p.y<0));assert.deepEqual(a.centers,b.centers.slice(0,count));
+ assert.equal(collisions(a.centers.map(p=>({p,r:8}))),0);
+}

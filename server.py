@@ -3,6 +3,8 @@ import json
 import sqlite3
 from urllib.parse import urlsplit, parse_qs
 from chat_store import ChatStore
+from cloud_client import Cloud, CloudError
+from uuid import UUID
 from design_store import DesignStore
 from functools import partial
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -10,9 +12,10 @@ from pathlib import Path
 import webbrowser
 
 class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, store, chat, **kwargs):
+    def __init__(self, *args, store, chat, cloud, **kwargs):
         self.store = store
         self.chat = chat
+        self.cloud = cloud
         super().__init__(*args, **kwargs)
 
     def send_json(self, value, status=200):
@@ -25,6 +28,19 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        path = urlsplit(self.path).path
+        if path in ("/api/memory","/api/cloud/status"):
+            if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
+                return self.send_json({"error":"Invalid host"},403)
+            try:
+                if path == "/api/cloud/status":
+                    return self.send_json(self.cloud.status())
+                query = parse_qs(urlsplit(self.path).query)
+                return self.send_json(self.chat.memory_snapshot(int(query["cluster"][0]) if "cluster" in query else None))
+            except (ValueError,TypeError):
+                return self.send_json({"error":"Invalid block"},400)
+            except sqlite3.Error:
+                return self.send_json({"error":"Memory unavailable"},503)
         if urlsplit(self.path).path in ("/api/chat", "/api/chat/health"):
             if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                 return self.send_json({"error":"Invalid host"},403)
@@ -47,7 +63,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -56,11 +72,36 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "Expected JSON"}, 415)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= (16384 if path == "/api/chat" else 4096):
+            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
+            if path == "/api/cloud/key":
+                return self.send_json(self.cloud.save_key(value))
+            if path == "/api/cloud/models":
+                return self.send_json(self.cloud.load_models())
+            if path == "/api/cloud/connect":
+                return self.send_json(self.cloud.select(value))
+            if path == "/api/memory":
+                if not isinstance(value,dict) or set(value)!={"text","request_id","cloud"} or type(value["cloud"]) is not bool:
+                    raise ValueError("Invalid request")
+                paid = value.pop("cloud")
+                if not paid:
+                    return self.send_json(self.chat.memory_append(value))
+                text, rid = value["text"], value["request_id"]
+                if not isinstance(text,str) or not text.strip() or len(text)>1000 or not isinstance(rid,str) or str(UUID(rid))!=rid:
+                    raise ValueError("Invalid request")
+                if not self.chat.startup_health["ok"]:
+                    raise RuntimeError("Memory integrity failure")
+                with self.cloud.send_lock:
+                    existing = self.chat.existing_request(value)
+                    if existing:
+                        return self.send_json(existing)
+                    answer = self.cloud.complete(text.strip())
+                    return self.send_json(self.chat.memory_append(value,answer))
             self.send_json(self.chat.append(value) if path == "/api/chat" else self.store.save_camera(value) if path == "/api/camera" else self.store.save(value))
-        except (sqlite3.Error, RuntimeError):
+        except CloudError as exc:
+            self.send_json({"error":str(exc)},502)
+        except (sqlite3.Error, RuntimeError, OSError):
             self.send_json({"error": "Local memory unavailable"}, 503)
         except (ValueError, TypeError, OverflowError):
             self.send_json({"error": "Invalid settings"}, 400)
@@ -73,7 +114,7 @@ if __name__ == "__main__":
     root = Path(__file__).resolve().parent / "public"
     if not all((root / name).is_file() for name in ("main.js", "geometry.js")):
         raise SystemExit("Build the frontend first: npm run build")
-    with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=DesignStore(args.data_dir / "amatsureika.db"), chat=ChatStore(args.data_dir / "amatsureika.db"))) as server:
+    with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=DesignStore(args.data_dir / "amatsureika.db"), chat=ChatStore(args.data_dir / "amatsureika.db"), cloud=Cloud(args.data_dir / "amatsureika.db"))) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
         print(url, flush=True)
         if not args.no_browser:

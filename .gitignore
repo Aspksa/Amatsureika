@@ -9,3 +9,6 @@ data/*.db
 data/*.db-*
 
 public/geometry.js
+
+data/cloud.key
+data/cloud.tmp

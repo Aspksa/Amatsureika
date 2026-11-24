@@ -115,3 +115,15 @@ export function curvedPoint(a:Point,b:Point,t:number,bend=.18):Point{
  const c={x:(a.x+b.x)/2-dy*bend,y:(a.y+b.y)/2+dx*bend};
  return{x:v*v*a.x+2*v*p*c.x+p*p*b.x,y:v*v*a.y+2*v*p*c.y+p*p*b.y};
 }
+
+/** One visible dot per 500 messages. Stable forward triangular rows.
+ * All rows lie above the core, never wrap around it. */
+export function directedBlockLayout(count:number,mode:Mode):Layout{
+ const pitch=mode==="compact"?26:mode==="hex"?40:34;
+ const centers=Array.from({length:count},(_,i)=>{
+  const row=Math.floor((Math.sqrt(8*i+1)-1)/2),col=i-row*(row+1)/2;
+  return{x:(col-row/2)*pitch,y:-210-row*pitch};
+ });
+ const radius=centers.reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+48),260);
+ return{mode,radius,outer:radius,centers,radii:centers.map(()=>12),orbits:[116,148],point:i=>centers[i],label:i=>centers[i]};
+}
