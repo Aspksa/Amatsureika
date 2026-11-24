@@ -26,3 +26,8 @@ for(const speed of [.25,1,2])for(let i=0;i<PARTICLES;i++){
 }
 assert.notEqual(particleAt(180,0,1).progress,particleAt(180,1,1).progress);
 console.log("Quiet request route, delayed response, local mode, failure, duplicate and independent particle timing passed");
+
+log=[];await runQuietFlow(true,{...hooks(log),prepare:async()=>{log.push("lookup");return false}});
+assert.deepEqual(log,["chat-core","lookup","send","committed","core-chat","memory","deliver"]);
+log=[];await runQuietFlow(true,{...hooks(log),prepare:async()=>{log.push("lookup");return true}});
+assert.deepEqual(log,["chat-core","lookup","core-cloud","wait","send","stop-wait","committed","cloud-core","core-chat","memory","deliver"]);

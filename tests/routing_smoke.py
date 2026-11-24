@@ -50,5 +50,8 @@ with tempfile.TemporaryDirectory() as d:
     try: execute({**req,"text":"другой текст"},p,True)
     except ValueError: pass
     else: raise AssertionError("changed plan accepted")
+    req,p=plan("Сколько сотрудников?")
+    assert p["sufficient"] and p["intent"]=="count" and "— 0." in p["local"]
+    assert execute(req,p,True)["route"]=="local" and len(calls)==2
     assert chat.health()["ok"]
 print("FTS backfill/increment, work and file retrieval, local sufficiency, consent-bound cloud, trash/archive, duplicate and integrity passed")

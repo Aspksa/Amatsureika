@@ -158,7 +158,7 @@ class Router:
             offsets={};total=0
             for p in pages: offsets[p["id"]]=total;total+=p["count"]
             for r in chatrows:
-                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных")): continue
+                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт")): continue
                 block=(offsets[r["cluster_id"]]+r["position"]-1)//500+1
                 candidates.append(("memory",block,"Сообщение #"+str(r["id"])+" ("+r["role"]+")",r["text"],r["created_at"],r["id"]))
         hits=[]
@@ -182,6 +182,20 @@ class Router:
         value=validate(value)
         q=value["text"]
         hits=self.search(q)
+        count_kinds={"сотрудников":"staff","автомобилей":"vehicles","машин":"vehicles","топливных карт":"cards","записей табеля":"timesheet","записей гсм":"fuel"}
+        count_match=re.fullmatch(r"сколько\s+(сотрудников|автомобилей|машин|топливных карт|записей табеля|записей гсм|файлов|документов|сообщений)[?\s]*",q.casefold())
+        count_answer=None
+        if count_match:
+            what=count_match.group(1)
+            summary=self.workspace.map_summary()
+            if what=="сообщений": n=sum(c["count"] for c in self.chat.memory_snapshot()["clusters"])
+            elif what in ("файлов","документов"): n=len(summary["files"])
+            else: n=summary["work"].get(count_kinds[what],0)
+            count_answer=f"Локальный подсчёт SQLite: {what} — {n}."
+            if what in count_kinds:
+                hits=[{"source":"work","id":r["id"],"message_id":None,"title":LABELS[r["kind"]],"text":"Активная запись учтена в подсчёте","updated":datetime.now(timezone.utc).isoformat(),"age_days":0,"coverage":1,"matched":[]} for r in summary["records"] if r["kind"]==count_kinds[what]][:8]
+            elif what in ("файлов","документов"):
+                hits=[{"source":"file","id":r["id"],"message_id":None,"title":r["name"],"text":"Файл учтён в подсчёте","updated":datetime.now(timezone.utc).isoformat(),"age_days":0,"coverage":1,"matched":[]} for r in summary["files"][:8]]
         lookup=bool(re.match(r"^\s*(найди|покажи|вспомни|поиск|что (?:я|мы) (?:писал|говорил))\b",q.casefold()))
         # Explicit retrieval, not arbitrary factual inference. Conflicts are
         # conservative possible discrepancies, not an AI verdict.
@@ -191,7 +205,7 @@ class Router:
                 if a["source"]==b["source"]=="work" and a["title"]==b["title"] and a["coverage"]==b["coverage"]==1 and a["text"]!=b["text"]:
                     conflicts.append("Несколько разных рабочих записей: "+a["title"]);break
         conflicts=list(dict.fromkeys(conflicts))[:3]
-        sufficient=lookup and bool(hits) and hits[0]["coverage"]>=.75 and not conflicts
+        sufficient=count_answer is not None or (lookup and bool(hits) and hits[0]["coverage"]>=.75 and not conflicts)
         context_parts=[]
         for h in hits:
             part=f"[{h['source']} #{h['id']}; {h['title']}; дата {h['updated'][:10]}] {h['text']}"
@@ -201,8 +215,10 @@ class Router:
         lines=[f"[{h['source']} #{h['id']}] {h['title']} ({h['updated'][:10]}): {h['text']}" for h in hits]
         local=("Найдено в локальной памяти (цитаты, не проверенные факты):\n"+"\n\n".join(lines)) if hits else "Недостаточно данных в локальной памяти. Запрос сохраню; для рассуждения можно явно разрешить Cloud.ru."
         if hits and not sufficient: local="Локальный поиск: найденные сведения могут быть неполными или устаревшими.\n"+"\n\n".join(lines)
+        if any(h["age_days"]>365 for h in hits): local+="\nНекоторые источники старше года; актуальность не подтверждена."
         if conflicts: local+="\nВозможные расхождения: "+"; ".join(conflicts)
-        plan={"token":uuid4().hex,"hits":hits,"intent":"lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts}
+        if count_answer is not None: local=count_answer;conflicts=[]
+        plan={"token":uuid4().hex,"hits":hits,"intent":"count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts}
         with self.lock:
             now=time.monotonic()
             for k in list(self.plans):

@@ -397,21 +397,60 @@ async function remember(s:Snapshot){
   item?.e.classList.remove("pending-memory");arrival(item?.e,"memory");renderKey="";requestFrame();
  }));
 }
+type SearchHit={source:"memory"|"work"|"file";id:number;title:string;text:string;updated:string;age_days:number;coverage:number};
+type RoutePlan={token:string;hits:SearchHit[];intent:string;sufficient:boolean;conflicts:string[];context:string;local:string;fts:boolean};
+async function routingPost<T>(path:string,body:object):Promise<T>{
+ const r=await fetch("/api/routing/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+ const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка поиска");return data as T;
+}
+async function retrieveAnimation(hits:SearchHit[]){
+ const distinct=Array.from(new Map(hits.map(h=>[h.source+":"+h.id,h])).values());
+ await Promise.all(distinct.map(async h=>{
+  const locate=()=>h.source==="memory"?clusters.findIndex(c=>c.id===h.id):h.source==="work"?workspaceMap.records.findIndex(r=>r.id===h.id):workspaceMap.files.findIndex(f=>f.id===h.id);
+  if(locate()<0)return;
+  const target=()=>{const i=locate();return i<0?corePoint():screenPoint(h.source==="memory"?memoryPoint(i):h.source==="work"?workPoint(i):filePoint(i))};
+  const kind=h.source==="memory"?"memory":h.source==="work"?"work":"docs";
+  await playLeg(corePoint,target,kind);
+  const i=locate();if(i<0)return;
+  const node=h.source==="memory"?visibleItems.get(key(i,0,false))?.e:h.source==="work"?workNodes.get(h.id):fileNodes.get(h.id);
+  arrival(node,"memory");
+  await playLeg(target,corePoint,kind);arrival(group("core"),"reply");
+ }));
+}
+function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
+ const dialog=byId<HTMLDialogElement>("routingConsent");
+ byId("routingQuestion").textContent=text;
+ byId("routingContext").textContent=plan.context||"Нет найденных выдержек — будет отправлен только вопрос.";
+ byId("routingWarnings").textContent=plan.conflicts.join("; ");
+ return new Promise(resolve=>{
+  dialog.returnValue="local";
+  dialog.addEventListener("close",()=>resolve(dialog.returnValue==="cloud"),{once:true});
+  dialog.showModal();
+ });
+}
 form.onsubmit=async e=>{
  e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||!ready||selected>=0)return;
  const paid=byId<HTMLInputElement>("cloudSend").checked;
- if(paid&&!window.confirm("Отправить это сообщение в Cloud.ru? Возможна оплата до 512 выходных токенов плюс входные."))return;
- busy=true;sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent=paid?"Cloud.ru: запрос…":"Сохранение…";
+ busy=true;sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Поиск в локальной памяти…";
  if(!pending||pending.text!==raw||pending.cloud!==paid)pending={text:raw,request_id:crypto.randomUUID(),cloud:paid};
- const request=pending;
+ const request=pending;let plan:RoutePlan|undefined,approved=false;
  try{
   await runQuietFlow<Snapshot>(paid,{
    leg:routeLeg,
+   prepare:async requested=>{
+    chatStatus.textContent="Поиск: переписка, работа, документы…";
+    plan=await routingPost<RoutePlan>("plan",{text:request.text,request_id:request.request_id});
+    await refreshWorkspaceMap();
+    chatStatus.textContent="Найдено источников: "+plan.hits.length+(plan.fts?" · FTS5":" · ограниченный поиск");
+    await retrieveAnimation(plan.hits);
+    approved=!!(requested&&!plan.sufficient&&await approveCloud(request.text,plan));
+    chatStatus.textContent=approved?"Cloud.ru: отправка подтверждена…":plan.sufficient?"Локальный ответ…":"Локальные результаты · без Cloud.ru";
+    return approved;
+   },
    waiting:active=>{group("cloudIcon").classList.toggle("cloud-waiting",active);if(active)chatStatus.textContent="Cloud.ru: ожидание ответа…"},
    send:async()=>{
-    const r=await fetch("/api/memory",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(request)});
-    if(!r.ok){const error=await r.json().catch(()=>({error:"Ошибка сохранения"}));throw Error(error.error||"Ошибка сохранения")}
-    return r.json();
+    if(!plan)throw Error("Нет плана поиска");
+    return routingPost<Snapshot>("execute",{text:request.text,request_id:request.request_id,token:plan.token,cloud:approved});
    },
    committed:s=>{
     const previousCount=clusters.length;syncMap(s.clusters);pending=null;chatPrompt.value="";byId<HTMLInputElement>("cloudSend").checked=false;
@@ -423,8 +462,8 @@ form.onsubmit=async e=>{
    deliver:s=>{if(selected<0)s.messages.filter(m=>m.role==="assistant").forEach(appendMessage)},
    remember
   });
-  chatStatus.textContent="Сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
- }catch(error){clearFlow();arrival(group(request.cloud?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=request.cloud?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":"Связь прервана. Повторите отправку — дубликата не будет.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
+  chatStatus.textContent=(approved?"Cloud.ru":"Локальный ответ")+" · сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
+ }catch(error){clearFlow();arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":"Связь прервана. Повторите отправку — дубликата не будет.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
  finally{busy=false;sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
