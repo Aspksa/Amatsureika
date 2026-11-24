@@ -33,7 +33,8 @@ def registry():
         {"id":"work_edit","title":"Изменение записи","permission":"confirm_each","month":False},
         {"id":"cloud","title":"Cloud.ru","permission":"confirm_each","month":False},
         {"id":"web","title":"Интернет: поиск и чтение","permission":"confirm_each","month":False},
-        {"id":"knowledge","title":"Структурированная память","permission":"confirm_each","month":False}]
+        {"id":"knowledge","title":"Структурированная память","permission":"confirm_each","month":False},
+        {"id":"cognitive","title":"Аналитика и логические проверки","permission":"confirm_each","month":False}]
 
 READ={r["id"]:r for r in registry() if r["permission"]=="read_local"}
 

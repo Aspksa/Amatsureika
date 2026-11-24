@@ -6,6 +6,7 @@ from agent_engine import Agent, parse as agent_parse
 from work_import import Importer
 from web_research import WebResearch
 from knowledge_store import Knowledge
+from cognitive_tools import CognitiveTools
 from evidence import rank as sparse_rank, evidence_links, missing_terms
 import ast
 from decimal import Decimal, localcontext, DecimalException
@@ -76,6 +77,7 @@ class Router:
         self.importer=Importer(workspace)
         self.web=WebResearch(chat,workspace)
         self.knowledge=Knowledge(chat,cloud)
+        self.cognitive=CognitiveTools(workspace,self.knowledge,self.agent,extract)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
