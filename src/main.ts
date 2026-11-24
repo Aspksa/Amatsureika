@@ -1,6 +1,6 @@
 import {setupWorkspace} from "./workspace.js";
 import {runQuietFlow, particleAt, PARTICLES, type Leg} from "./flow.js";
-import {ClusterIndex, directedBlockLayout, functionalOrbit, documentPoint, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
+import {ClusterIndex, directedBlockLayout, workspaceSectors, dataOrbit, type WorkKind, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
 const NS="http://www.w3.org/2000/svg";
 const byId=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const svg=document.getElementById("brain") as unknown as SVGSVGElement;
@@ -45,10 +45,14 @@ const mix=(a:Point,b:Point,t:number):Point=>({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*
 function position(item:Item){return geometry.point(item.cluster,item.index,item.outer)}
 function transform(item:Item,p:Point){item.now=valid(p)?p:position(item);if(!valid(item.now))item.now={x:0,y:0}}
 type MapFile={id:number;name:string;size:number};
-type WorkspaceMap={files:MapFile[];work:Record<string,number>};
-let workspaceMap:WorkspaceMap={files:[],work:{}},filePoints:Point[]=[],fileSpatial=new ClusterIndex([]),fileNodes=new Map<number,SVGCircleElement>();
+type MapWork={id:number;kind:WorkKind};
+type WorkspaceMap={files:MapFile[];work:Record<string,number>;records:MapWork[]};
+const workTitles:Record<WorkKind,string>={staff:"Сотрудники",timesheet:"Табель",cards:"Топливные карты",vehicles:"Автомобили",fuel:"ГСМ"};
+const workColors:Record<WorkKind,string>={staff:"#d9b07b",timesheet:"#ceb38e",cards:"#e2c18d",vehicles:"#c99867",fuel:"#e4a66e"};
+let workspaceMap:WorkspaceMap={files:[],work:{},records:[]},filePoints:Point[]=[],fileSpatial=new ClusterIndex([]),fileNodes=new Map<number,SVGCircleElement>();
+let workPoints:Point[]=[],oldWorkPoints:Point[]|null=null,workSpatial=new ClusterIndex([]),workNodes=new Map<number,SVGCircleElement>();
 let mapOuter=geometry.outer,orbitPoints:Point[]=[],oldCenters:Point[]|null=null,oldOrbit:Point[]|null=null,oldSpatial:ClusterIndex|null=null,oldFilePoints:Point[]|null=null;
-let transition=1,workspaceRevision=0,hoverTarget:{kind:"memory"|"file"|"module";index:number;id?:string}|null=null;
+let transition=1,workspaceRevision=0,hoverTarget:{kind:"memory"|"file"|"work"|"module";index:number;id?:string}|null=null;
 const moduleList=()=>Array.from(group("functional-orbit").querySelectorAll<SVGGElement>(".functional-icon"));
 function prepareLayout(animate=false){
  if(animate&&!motionOff()){
@@ -56,13 +60,14 @@ function prepareLayout(animate=false){
   oldSpatial=new ClusterIndex(oldCenters);
   oldOrbit=orbitPoints.map((p,i)=>oldOrbit?.[i]?mix(oldOrbit[i],p,transition):p);
   oldFilePoints=filePoints.map((p,i)=>oldFilePoints?.[i]?mix(oldFilePoints[i],p,transition):p);
+  oldWorkPoints=workPoints.map((p,i)=>oldWorkPoints?.[i]?mix(oldWorkPoints[i],p,transition):p);
   transition=0;moving=true;start=performance.now();
- }else{oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null;transition=1;moving=false}
+ }else{oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null;oldWorkPoints=null;transition=1;moving=false}
  geometry=directedBlockLayout(counts.length,mode);reindex();
- filePoints=workspaceMap.files.map((_,i)=>documentPoint(i,geometry.edge??180));
- fileSpatial=new ClusterIndex(filePoints);
- const edge=filePoints.reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+14),geometry.edge??180);
- mapOuter=Math.max(geometry.outer,edge+72);orbitPoints=functionalOrbit(moduleList().length,mapOuter);
+ const sectors=workspaceSectors(mode,geometry.edge??180,workspaceMap.files.length,workspaceMap.records);
+ filePoints=sectors.files;workPoints=sectors.work;
+ fileSpatial=new ClusterIndex(filePoints);workSpatial=new ClusterIndex(workPoints);
+ mapOuter=Math.max(geometry.outer,sectors.edge+72);orbitPoints=dataOrbit(mapOuter);
 }
 function fitZoom(){
  const radius=orbitPoints.reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+45),mapOuter+58);
@@ -71,10 +76,11 @@ function fitZoom(){
 function fitOffset(){return 0}
 function memoryPoint(i:number):Point{const p=geometry.centers[i];return oldCenters?.[i]?mix(oldCenters[i],p,transition):p}
 function filePoint(i:number):Point{const p=filePoints[i];return oldFilePoints?.[i]?mix(oldFilePoints[i],p,transition):p}
+function workPoint(i:number):Point{const p=workPoints[i];return oldWorkPoints?.[i]?mix(oldWorkPoints[i],p,transition):p}
 function updateOrbit(){
  moduleList().forEach((icon,i)=>{const dest=orbitPoints[i];if(!dest)return;const p=oldOrbit?.[i]?mix(oldOrbit[i],dest,transition):dest;icon.setAttribute("transform",`translate(${p.x} ${p.y})`)});
 }
-function hover(kind:"memory"|"file"|"module",index:number,id?:string){hoverTarget={kind,index,id};requestFrame()}
+function hover(kind:"memory"|"file"|"work"|"module",index:number,id?:string){hoverTarget={kind,index,id};requestFrame()}
 function unhover(){hoverTarget=null;requestFrame()}
 function highlightFrame(){
  links.replaceChildren();labels.replaceChildren();
@@ -83,22 +89,30 @@ function highlightFrame(){
  let p:Point|undefined;
  if(h.kind==="memory"&&geometry.centers[h.index])p=memoryPoint(h.index);
  if(h.kind==="file"&&filePoints[h.index])p=filePoint(h.index);
+ if(h.kind==="work"&&workPoints[h.index])p=workPoint(h.index);
  if(h.kind==="module"){const icon=moduleList().find(x=>x.id===h.id);if(icon){const m=icon.transform.baseVal.consolidate()?.matrix;if(m)p={x:m.e,y:m.f}}}
  if(!p)return;
- const color=h.kind==="memory"?"#77d9c7":h.kind==="file"?"#b8a5e6":"#8db8d8";
+ const color=h.kind==="memory"?"#77d9c7":h.kind==="file"?"#b8a5e6":h.kind==="work"?"#d9b07b":"#8db8d8";
  el("line",{x1:0,y1:0,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links);
  if(h.kind==="memory"&&h.index>0){const prev=memoryPoint(h.index-1);el("line",{x1:prev.x,y1:prev.y,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links)}
- if(h.kind==="file"){const icon=moduleList().find(x=>x.id==="docsIcon"),m=icon?.transform.baseVal.consolidate()?.matrix;if(m)el("line",{x1:m.e,y1:m.f,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links)}
+ if(h.kind==="file"||h.kind==="work"){const icon=moduleList().find(x=>x.id===(h.kind==="file"?"docsIcon":"workIcon")),m=icon?.transform.baseVal.consolidate()?.matrix;if(m)el("line",{x1:m.e,y1:m.f,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links)}
+ if(h.kind==="module"&&(h.id==="workIcon"||h.id==="docsIcon")){const isWork=h.id==="workIcon",points=isWork?workPoints:filePoints;const stride=Math.max(1,Math.ceil(points.length/36));for(let i=0;i<points.length;i+=stride){const q=isWork?workPoint(i):filePoint(i);el("line",{x1:p.x,y1:p.y,x2:q.x,y2:q.y,class:"sector-link",stroke:isWork?"#d9b07b":"#b6a3e1"},links)}}
 }
-async function refreshWorkspaceMap(){
+async function refreshWorkspaceMap(animate=false){
  const rev=++workspaceRevision;
  try{
   const response=await fetch("/api/workspace/map",{cache:"no-store"});if(!response.ok)throw Error("map");
   const data:WorkspaceMap=await response.json();if(rev!==workspaceRevision)return;
-  const priorFit=fitZoom(),changed=JSON.stringify(workspaceMap.files)!==JSON.stringify(data.files);
+  const priorFit=fitZoom(),changed=JSON.stringify(workspaceMap)!==JSON.stringify(data);
+  const prevFiles=new Set(workspaceMap.files.map(f=>f.id)),prevWork=new Set(workspaceMap.records.map(r=>r.id));
   workspaceMap=data;byId("documentCount").textContent=data.files.length+" файлов";byId("workCount").textContent=Object.values(data.work).reduce((a,b)=>a+b,0)+" записей";
   if(changed){hoverTarget=null;prepareLayout();decorate();if(Math.abs(zoom-priorFit)<.03){zoom=fitZoom();tx=0;ty=0}}
   requestFrame();
+  if(animate&&changed&&!motionOff()&&!document.hidden){
+   const newFiles=data.files.filter(f=>!prevFiles.has(f.id)).slice(-3),newWork=data.records.filter(r=>!prevWork.has(r.id)).slice(-3);
+   for(const f of newFiles)void dataArrival("docsIcon",f.id);
+   for(const r of newWork)void dataArrival("workIcon",r.id);
+  }
  }catch{if(rev===workspaceRevision){byId("documentCount").textContent="Данные недоступны";byId("workCount").textContent="Данные недоступны"}}
 }
 function color(i:number){return palette[Math.floor(i/4)%palette.length]}
@@ -131,12 +145,12 @@ function renderFrame(now:number){
  frame=0;
  if(lastFrame&&(moving||flight)){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
  lastFrame=now;
- if(moving){const p=motionOff()?1:Math.min(1,(now-start)/700);transition=p*p*(3-2*p);moving=p<1;if(!moving){oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null}}
+ if(moving){const p=motionOff()?1:Math.min(1,(now-start)/700);transition=p*p*(3-2*p);moving=p<1;if(!moving){oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null;oldWorkPoints=null}}
  if(flight){const f=flight,p=motionOff()?1:Math.min(1,(now-f.begin)/650),e=p*p*(3-2*p);zoom=Math.exp(Math.log(f.fromZ)+(Math.log(f.z)-Math.log(f.fromZ))*e);tx=f.fromX+(f.x-f.fromX)*e;ty=f.fromY+(f.y-f.fromY)*e;if(p===1){flight=null;saveCamera()}}
  zoom=clamp(zoom,.025,64,fitZoom());tx=clamp(tx,-1e6,1e6);ty=clamp(ty,-1e6,1e6);
  world.setAttribute("transform",`translate(${tx} ${ty}) scale(${zoom})`);byId("reset").textContent=Math.round(zoom*100)+"%";
  const level=zoom<.45?"overview":zoom<1.6?"normal":zoom<5?"near":"detail";svg.dataset.lod=level;svg.dataset.quality=String(quality);
- renderVisible(level);renderFiles(level);updateOrbit();highlightFrame();
+ renderVisible(level);renderFiles(level);renderWorkNodes(level);updateOrbit();highlightFrame();
  updateFlow(now);
  if(moving||flight||flowLegs.size){requestFrame()}else lastFrame=0;
 }
@@ -185,6 +199,34 @@ function renderFiles(level:string){
  }
  for(const [id,dot] of fileNodes)if(!wanted.has(id)){dot.remove();fileNodes.delete(id)}
  layer.append(fragment);
+}
+let workRenderKey="";
+function renderWorkNodes(level:string){
+ const view=svg.viewBox.baseVal,sig=[mapRevision,zoom,tx,ty,view.width,view.height,transition,level].join(":");
+ if(sig===workRenderKey)return;workRenderKey=sig;
+ const candidates=workSpatial.query((view.x-70-tx)/zoom,(view.y-70-ty)/zoom,(view.x+view.width+70-tx)/zoom,(view.y+view.height+70-ty)/zoom);
+ const wanted=new Set<number>(),layer=group("workNodes"),fragment=document.createDocumentFragment();
+ for(const i of candidates){
+  const record=workspaceMap.records[i],p=workPoint(i);wanted.add(record.id);let dot=workNodes.get(record.id);
+  if(!dot){
+   dot=el("circle",{class:"work-dot",r:5,tabindex:0,role:"button"});workNodes.set(record.id,dot);
+   const focus=()=>{const at=workspaceMap.records.findIndex(r=>r.id===record.id);if(at>=0)hover("work",at)};
+   const open=()=>{const r=workspaceMap.records.find(x=>x.id===record.id);if(r)void workspaceUI.openRecord(r.kind,r.id)};
+   dot.addEventListener("pointerenter",focus);dot.addEventListener("pointerleave",unhover);dot.addEventListener("focus",focus);dot.addEventListener("blur",unhover);
+   dot.addEventListener("click",open);dot.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open()}});
+   el("title",{},dot);fragment.append(dot);
+  }
+  dot.setAttribute("transform",`translate(${p.x} ${p.y})`);dot.setAttribute("r",String(Math.min(10,Math.max(3.5,2.1/zoom))));
+  dot.setAttribute("fill",workColors[record.kind]);dot.setAttribute("aria-label",workTitles[record.kind]+" · "+record.id);dot.firstElementChild!.textContent=workTitles[record.kind]+" · "+record.id;
+ }
+ for(const [id,dot] of workNodes)if(!wanted.has(id)){dot.remove();workNodes.delete(id)}
+ layer.append(fragment);
+}
+async function dataArrival(id:"workIcon"|"docsIcon",recordId:number){
+ const isWork=id==="workIcon",find=()=>isWork?workspaceMap.records.findIndex(r=>r.id===recordId):workspaceMap.files.findIndex(r=>r.id===recordId);
+ const target=()=>{const i=find();return i<0?modulePoint(id):screenPoint(isWork?workPoint(i):filePoint(i))};
+ await playLeg(()=>modulePoint(id),target,isWork?"work":"docs");
+ arrival((isWork?workNodes:fileNodes).get(recordId),"memory");
 }
 function relayout(){prepareLayout(true);decorate();requestFrame()}
 function setMode(m:Mode){if(m===mode)return;mode=m;flight=null;document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===m));relayout();animateCamera(fitZoom(),0,fitOffset())}
@@ -437,11 +479,11 @@ async function moduleRequest<T>(id:"workIcon"|"docsIcon",operation:()=>Promise<T
   await playLeg(corePoint,()=>modulePoint(id),kind);arrival(icon,"request");
   const result=await operation();
   await playLeg(()=>modulePoint(id),corePoint,kind);arrival(group("core"),"reply");
-  void refreshWorkspaceMap();return result;
+  void refreshWorkspaceMap(true);return result;
  }catch(e){arrival(icon,"error");throw e}
  finally{const n=(activityCounts.get(id)??1)-1;activityCounts.set(id,n);if(n===0)icon.classList.remove("module-working")}
 }
-setupWorkspace(bindOrbit,moduleRequest);
+const workspaceUI=setupWorkspace(bindOrbit,moduleRequest);
 for(const icon of moduleList()){
  const show=()=>hover("module",0,icon.id);
  icon.addEventListener("pointerenter",show);icon.addEventListener("pointerleave",unhover);icon.addEventListener("focus",show);icon.addEventListener("blur",unhover);

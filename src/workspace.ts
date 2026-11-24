@@ -127,4 +127,10 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void,run:<T>(id:"
   upload.value="";diskBusy=false;upload.disabled=trash;await refreshDisk();if(errors.length)diskStatus.textContent=errors.join("; ");
  };
  bind("docsIcon",()=>{if(!dd.open)dd.showModal();void refreshDisk()});id("diskClose").onclick=()=>dd.close();
+ return {openRecord:async(k:WorkKind,recordId:number)=>{
+  if(workBusy)return;
+  if(!wd.open)wd.showModal();kind=k;workFilter.value="";workStatus.textContent="Загрузка…";
+  try{await loadWork();const record=rows.find(r=>r.kind===k&&r.id===recordId&&!r.archived);if(record){edit(record);workStatus.textContent="Запись #"+recordId}else workStatus.textContent="Запись уже недоступна"}
+  catch(e){workStatus.textContent=err(e)}
+ }};
 }
