@@ -163,3 +163,24 @@ main{height:calc(100dvh - 58px);position:relative}
 #diskPreview{padding:12px;border:1px solid #29434f;border-radius:8px;margin-top:12px}
 #diskPreviewText{white-space:pre-wrap;overflow-wrap:anywhere;max-height:30dvh;overflow:auto}
 @media(max-width:600px){.workspace-dialog{padding:14px}.workspace-dialog button{font-size:11px}.workspace-table th,.workspace-table td{padding:7px}.disk-row .disk-name{min-width:110px}}
+
+/* Functional Orbit V2 — separate real data layers, no fake nodes. */
+#cloudIcon{color:#81c6e3}#workIcon{color:#d9b07b}#docsIcon{color:#b6a3e1}#settingsIcon{color:#94c9b4}
+.functional-icon .cloud-shell{stroke:currentColor;stroke-opacity:.78}
+.functional-icon .cloud-mark{stroke:currentColor}
+.functional-icon.module-working .cloud-shell{stroke-opacity:1;stroke-width:1.8;filter:drop-shadow(0 0 4px currentColor)}
+.quiet-work{color:#d9b07b}.quiet-docs{color:#b6a3e1}
+.hover-link{stroke-width:.8;opacity:calc(.18 + .38 * var(--motion));pointer-events:none;vector-effect:non-scaling-stroke}
+.document-dot{fill:#b6a3e1;opacity:.72;cursor:pointer;outline:none}
+.document-dot:hover,.document-dot:focus-visible{fill:#e6d7ff;stroke:#e6d7ff;stroke-width:1.2}
+.detail-label{fill:#94b4be;opacity:.8;pointer-events:none}
+.map-counts{position:absolute;left:18px;bottom:16px;display:flex;gap:12px;color:#85a3af;font-size:10px;pointer-events:none}
+#documentCount{color:#b6a3e1}#workCount{color:#d9b07b}
+#fileDetail{width:min(440px,calc(100% - 28px))}
+#fileDownload{color:#9adacb}
+body.full-map header,body.full-map #chat{display:none!important}
+body.full-map main{height:100dvh!important}
+body.full-map #stage{visibility:visible!important;flex:1!important;width:100%!important}
+body.full-map #panel{display:none!important}
+.workspace-dialog::backdrop{background:#02080d66;backdrop-filter:none}
+@media(max-width:720px){.map-counts{left:8px;bottom:34px;font-size:9px}.zoom #fullMap{font-size:9px}}

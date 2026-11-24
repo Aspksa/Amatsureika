@@ -1,6 +1,6 @@
 import {setupWorkspace} from "./workspace.js";
 import {runQuietFlow, particleAt, PARTICLES, type Leg} from "./flow.js";
-import {ClusterIndex, directedBlockLayout, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
+import {ClusterIndex, directedBlockLayout, functionalOrbit, documentPoint, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
 const NS="http://www.w3.org/2000/svg";
 const byId=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const svg=document.getElementById("brain") as unknown as SVGSVGElement;
@@ -44,13 +44,68 @@ function reindex(){spatial=new ClusterIndex(geometry.centers);mapRevision++;rend
 const mix=(a:Point,b:Point,t:number):Point=>({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t});
 function position(item:Item){return geometry.point(item.cluster,item.index,item.outer)}
 function transform(item:Item,p:Point){item.now=valid(p)?p:position(item);if(!valid(item.now))item.now={x:0,y:0}}
-function fitZoom(){return Math.min(1,720/geometry.radius)}
-function fitOffset(){return counts.length?Math.min(360,(geometry.radius-148)*fitZoom()/2):0}
+type MapFile={id:number;name:string;size:number};
+type WorkspaceMap={files:MapFile[];work:Record<string,number>};
+let workspaceMap:WorkspaceMap={files:[],work:{}},filePoints:Point[]=[],fileSpatial=new ClusterIndex([]),fileNodes=new Map<number,SVGCircleElement>();
+let mapOuter=geometry.outer,orbitPoints:Point[]=[],oldCenters:Point[]|null=null,oldOrbit:Point[]|null=null,oldSpatial:ClusterIndex|null=null,oldFilePoints:Point[]|null=null;
+let transition=1,workspaceRevision=0,hoverTarget:{kind:"memory"|"file"|"module";index:number;id?:string}|null=null;
+const moduleList=()=>Array.from(group("functional-orbit").querySelectorAll<SVGGElement>(".functional-icon"));
+function prepareLayout(animate=false){
+ if(animate&&!motionOff()){
+  oldCenters=geometry.centers.map((p,i)=>oldCenters?.[i]?mix(oldCenters[i],p,transition):p);
+  oldSpatial=new ClusterIndex(oldCenters);
+  oldOrbit=orbitPoints.map((p,i)=>oldOrbit?.[i]?mix(oldOrbit[i],p,transition):p);
+  oldFilePoints=filePoints.map((p,i)=>oldFilePoints?.[i]?mix(oldFilePoints[i],p,transition):p);
+  transition=0;moving=true;start=performance.now();
+ }else{oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null;transition=1;moving=false}
+ geometry=directedBlockLayout(counts.length,mode);reindex();
+ filePoints=workspaceMap.files.map((_,i)=>documentPoint(i,geometry.edge??180));
+ fileSpatial=new ClusterIndex(filePoints);
+ const edge=filePoints.reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+14),geometry.edge??180);
+ mapOuter=Math.max(geometry.outer,edge+72);orbitPoints=functionalOrbit(moduleList().length,mapOuter);
+}
+function fitZoom(){
+ const radius=orbitPoints.reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+45),mapOuter+58);
+ return Math.max(.025,Math.min(1,490/radius))
+}
+function fitOffset(){return 0}
+function memoryPoint(i:number):Point{const p=geometry.centers[i];return oldCenters?.[i]?mix(oldCenters[i],p,transition):p}
+function filePoint(i:number):Point{const p=filePoints[i];return oldFilePoints?.[i]?mix(oldFilePoints[i],p,transition):p}
+function updateOrbit(){
+ moduleList().forEach((icon,i)=>{const dest=orbitPoints[i];if(!dest)return;const p=oldOrbit?.[i]?mix(oldOrbit[i],dest,transition):dest;icon.setAttribute("transform",`translate(${p.x} ${p.y})`)});
+}
+function hover(kind:"memory"|"file"|"module",index:number,id?:string){hoverTarget={kind,index,id};requestFrame()}
+function unhover(){hoverTarget=null;requestFrame()}
+function highlightFrame(){
+ links.replaceChildren();labels.replaceChildren();
+ if(zoom>=1.6){for(const item of items){const p=item.now;const label=el("text",{x:p.x+9,y:p.y+3,class:"detail-label","font-size":Math.max(2,10/zoom)},labels);label.textContent=String(counts[item.cluster])+"/500"}}
+ const h=hoverTarget;if(!h)return;
+ let p:Point|undefined;
+ if(h.kind==="memory"&&geometry.centers[h.index])p=memoryPoint(h.index);
+ if(h.kind==="file"&&filePoints[h.index])p=filePoint(h.index);
+ if(h.kind==="module"){const icon=moduleList().find(x=>x.id===h.id);if(icon){const m=icon.transform.baseVal.consolidate()?.matrix;if(m)p={x:m.e,y:m.f}}}
+ if(!p)return;
+ const color=h.kind==="memory"?"#77d9c7":h.kind==="file"?"#b8a5e6":"#8db8d8";
+ el("line",{x1:0,y1:0,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links);
+ if(h.kind==="memory"&&h.index>0){const prev=memoryPoint(h.index-1);el("line",{x1:prev.x,y1:prev.y,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links)}
+ if(h.kind==="file"){const icon=moduleList().find(x=>x.id==="docsIcon"),m=icon?.transform.baseVal.consolidate()?.matrix;if(m)el("line",{x1:m.e,y1:m.f,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links)}
+}
+async function refreshWorkspaceMap(){
+ const rev=++workspaceRevision;
+ try{
+  const response=await fetch("/api/workspace/map",{cache:"no-store"});if(!response.ok)throw Error("map");
+  const data:WorkspaceMap=await response.json();if(rev!==workspaceRevision)return;
+  const priorFit=fitZoom(),changed=JSON.stringify(workspaceMap.files)!==JSON.stringify(data.files);
+  workspaceMap=data;byId("documentCount").textContent=data.files.length+" файлов";byId("workCount").textContent=Object.values(data.work).reduce((a,b)=>a+b,0)+" записей";
+  if(changed){hoverTarget=null;prepareLayout();decorate();if(Math.abs(zoom-priorFit)<.03){zoom=fitZoom();tx=0;ty=0}}
+  requestFrame();
+ }catch{if(rev===workspaceRevision){byId("documentCount").textContent="Данные недоступны";byId("workCount").textContent="Данные недоступны"}}
+}
 function color(i:number){return palette[Math.floor(i/4)%palette.length]}
 const glyphs=["M0 -5 4 -2 4 2 0 5 -4 2 -4 -2Z M0 -2v4 M-2 0h4","M-4 -4h8v8h-8Z M-2 -1h4 M-2 2h3","M-4 3 -1 -3 1 1 4 -4 M-4 3h8","M0 -5 5 0 0 5 -5 0Z M0 -2v4","M0 4C-7 0 -4 -5 0 -2 4 -5 7 0 0 4Z","M-4 -3h8 M-4 0h8 M-4 3h5","M-5 -3 0 -5 5 -3 0 0Z M-5 0 0 3 5 0 M-5 3 0 5 5 3","M0 -5 4 3 0 1 -4 3Z","M-5 -2 0 -5 5 -2 0 1Z M-3 0v3l3 2 3-2V0","M-4 0 -1 3 4 -3","M-4 4V0 M0 4v-8 M4 4v-5","M-3 -5h4l3 3v7h-7Z M1 -5v3h3","M-3 -3 3 3 M-3 3 3 -3 M-4 -4h2v2h-2Z M2 2h2v2H2Z","M-4 -1 1 -5 5 -1 0 4 -4 4Z","M-5 0Q0 -6 5 0Q0 6 -5 0Z M0 -2v4","M-5 -4h10v7H0l-3 2V3h-2Z","M-4 4 0 0 4 -4 M0 -4h4v4","M-4 -4h3 M-4 -4v3 M4 4H1 M4 4V1 M0 -2v4","M-5 4 0 -1 M0 -1 2 -4 5 -5 4 -2 1 0Z","M-4 -4h8v8h-8Z M-4 0h8 M0 -4v8","M0 -5 4 -3 4 3 0 5 -4 3 -4 -3Z M-2 0h4"];
 function add(i:number,outer:boolean,n:number){
  const e=el("circle",{r:5,class:"memory-block",color:color(i),tabindex:0,role:"button","aria-label":"Блок памяти "+(i+1)});
- e.setAttribute("data-node",nodeId(i,n,outer));e.addEventListener("click",()=>select(i));e.addEventListener("keydown",ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();select(i)}});e.addEventListener("dblclick",ev=>{ev.stopPropagation();focusCluster(i)});
+ e.setAttribute("data-node",nodeId(i,n,outer));e.addEventListener("pointerenter",()=>hover("memory",i));e.addEventListener("pointerleave",unhover);e.addEventListener("focus",()=>hover("memory",i));e.addEventListener("blur",unhover);e.addEventListener("click",()=>select(i));e.addEventListener("keydown",ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();select(i)}});e.addEventListener("dblclick",ev=>{ev.stopPropagation();focusCluster(i)});
  const item:Item={e,cluster:i,index:n,outer,from:{x:0,y:0},to:{x:0,y:0},now:{x:0,y:0}};item.to=position(item);item.from=item.to;transform(item,item.to);items.push(item);visibleItems.set(key(i,n,outer),item);return item
 }
 function refreshStats(){byId("stats").textContent=counts.reduce((a,b)=>a+b,0)+" СООБЩЕНИЙ · "+names.length+" БЛОКОВ";Array.from(legend.children).forEach((b,i)=>{const n=b.lastElementChild;if(n)n.textContent=counts[i]+" / 500"})}
@@ -59,7 +114,8 @@ function polygon(c:Point,r:number){return Array.from({length:6},(_,j)=>{const p=
 function decorate(){
  svg.dataset.mode=mode;
  for(const g of [orbits,labels,links,cells])g.replaceChildren();
- for(const r of geometry.orbits)el("circle",{r,class:"orbit"},orbits);
+ for(const r of [116,148,mapOuter-28,mapOuter])el("circle",{r,class:"orbit"},orbits);
+ updateOrbit();
  if(motionOff())svg.pauseAnimations();else svg.unpauseAnimations();
 }
 function select(i:number){
@@ -75,36 +131,62 @@ function renderFrame(now:number){
  frame=0;
  if(lastFrame&&(moving||flight)){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
  lastFrame=now;
- if(moving){const p=motionOff()?1:Math.min(1,(now-start)/700),e=p*p*(3-2*p);for(const it of items)transform(it,mix(it.from,it.to,e));moving=p<1}
+ if(moving){const p=motionOff()?1:Math.min(1,(now-start)/700);transition=p*p*(3-2*p);moving=p<1;if(!moving){oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null}}
  if(flight){const f=flight,p=motionOff()?1:Math.min(1,(now-f.begin)/650),e=p*p*(3-2*p);zoom=Math.exp(Math.log(f.fromZ)+(Math.log(f.z)-Math.log(f.fromZ))*e);tx=f.fromX+(f.x-f.fromX)*e;ty=f.fromY+(f.y-f.fromY)*e;if(p===1){flight=null;saveCamera()}}
  zoom=clamp(zoom,.025,64,fitZoom());tx=clamp(tx,-1e6,1e6);ty=clamp(ty,-1e6,1e6);
  world.setAttribute("transform",`translate(${tx} ${ty}) scale(${zoom})`);byId("reset").textContent=Math.round(zoom*100)+"%";
  const level=zoom<.45?"overview":zoom<1.6?"normal":zoom<5?"near":"detail";svg.dataset.lod=level;svg.dataset.quality=String(quality);
- renderVisible(level);
+ renderVisible(level);renderFiles(level);updateOrbit();highlightFrame();
  updateFlow(now);
  if(moving||flight||flowLegs.size){requestFrame()}else lastFrame=0;
 }
 function renderVisible(level:string){
  const view=svg.viewBox.baseVal, margin=50;
- const signature=[mapRevision,zoom,tx,ty,view.width,view.height,level,quality,selected].join(":");
+ const signature=[mapRevision,zoom,tx,ty,view.width,view.height,level,quality,selected,transition].join(":");
  if(signature===renderKey)return;renderKey=signature;
- const candidates=spatial.query((view.x-margin-tx)/zoom,(view.y-margin-ty)/zoom,(view.x+view.width+margin-tx)/zoom,(view.y+view.height+margin-ty)/zoom);
+ const bounds:[number,number,number,number]=[(view.x-margin-tx)/zoom,(view.y-margin-ty)/zoom,(view.x+view.width+margin-tx)/zoom,(view.y+view.height+margin-ty)/zoom];
+ const candidates=Array.from(new Set([...spatial.query(...bounds),...(oldSpatial?.query(...bounds)??[])]));
  const wanted=new Set<string>(),fragment=document.createDocumentFragment();
  for(const i of candidates){
-  const k=key(i,0,false);wanted.add(k);const it=visibleItems.get(k)||add(i,false,0),p=geometry.centers[i];
+  const k=key(i,0,false);wanted.add(k);const it=visibleItems.get(k)||add(i,false,0),p=memoryPoint(i);
   it.now=p;it.e.setAttribute("transform",`translate(${p.x.toFixed(2)} ${p.y.toFixed(2)})`);
-  it.e.setAttribute("r",String(Math.min(12,Math.max(5,2.4/zoom))));
+  it.e.setAttribute("r",String(Math.min(12,Math.max(3.5,2.4/zoom))));
+  it.e.classList.toggle("near-detail",level==="near"||level==="detail");
+  it.e.setAttribute("aria-label","Блок "+(i+1)+": "+counts[i]+" из 500 сообщений");
   it.e.classList.toggle("archive",counts[i]===500);it.e.classList.toggle("chosen",selected===i);
   it.e.classList.toggle("pending-memory",pendingClusters.has(i));it.e.classList.toggle("active-block",i===counts.length-1&&counts[i]<500);
   it.e.style.setProperty("--fill-level",String(counts[i]/500));it.e.style.opacity=selected>=0&&selected!==i?".26":"";
   it.e.setAttribute("aria-label","Блок "+(i+1)+": "+counts[i]+" из 500 сообщений");
+  if(!it.e.firstElementChild)el("title",{},it.e);it.e.firstElementChild!.textContent="Блок "+(i+1)+" · "+counts[i]+"/500";
   if(!it.e.isConnected)fragment.append(it.e);
  }
  for(const [k,it] of visibleItems)if(!wanted.has(k)){it.e.remove();visibleItems.delete(k)}
  items.splice(0,items.length,...visibleItems.values());nodes.append(fragment);
  svg.dataset.visibleNodes=String(visibleItems.size);
 }
-function relayout(){geometry=directedBlockLayout(counts.length,mode);reindex();decorate();requestFrame()}
+let fileRenderKey="";
+function renderFiles(level:string){
+ const view=svg.viewBox.baseVal,sig=[mapRevision,zoom,tx,ty,view.width,view.height,transition,level].join(":");
+ if(sig===fileRenderKey)return;fileRenderKey=sig;
+ const candidates=fileSpatial.query((view.x-70-tx)/zoom,(view.y-70-ty)/zoom,(view.x+view.width+70-tx)/zoom,(view.y+view.height+70-ty)/zoom);
+ const wanted=new Set<number>(),layer=group("fileNodes"),fragment=document.createDocumentFragment();
+ for(const i of candidates){
+  const file=workspaceMap.files[i],p=filePoint(i);wanted.add(file.id);let dot=fileNodes.get(file.id);
+  if(!dot){
+   dot=el("circle",{class:"document-dot",r:5,tabindex:0,role:"button"});fileNodes.set(file.id,dot);
+   const focus=()=>{const at=workspaceMap.files.findIndex(f=>f.id===file.id);if(at>=0)hover("file",at)};
+   const open=()=>{const f=workspaceMap.files.find(x=>x.id===file.id);if(f)byId<HTMLAnchorElement>("fileDownload").href="/api/disk/download?id="+f.id;if(f){byId("fileDetailName").textContent=f.name;byId("fileDetailSize").textContent=(f.size/1024).toLocaleString("ru",{maximumFractionDigits:1})+" КБ";byId<HTMLDialogElement>("fileDetail").showModal()}};
+   dot.addEventListener("pointerenter",focus);dot.addEventListener("pointerleave",unhover);dot.addEventListener("focus",focus);dot.addEventListener("blur",unhover);
+   dot.addEventListener("click",open);dot.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open()}});
+   el("title",{},dot);fragment.append(dot);
+  }
+  dot.setAttribute("transform",`translate(${p.x} ${p.y})`);dot.setAttribute("r",String(Math.min(10,Math.max(3.5,2.1/zoom))));
+  dot.setAttribute("aria-label",file.name);dot.firstElementChild!.textContent=file.name;
+ }
+ for(const [id,dot] of fileNodes)if(!wanted.has(id)){dot.remove();fileNodes.delete(id)}
+ layer.append(fragment);
+}
+function relayout(){prepareLayout(true);decorate();requestFrame()}
 function setMode(m:Mode){if(m===mode)return;mode=m;flight=null;document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===m));relayout();animateCamera(fitZoom(),0,fitOffset())}
 function camera(){requestFrame()}
 function zoomAt(factor:number,x=0,y=0){flight=null;const next=clamp(zoom*factor,.025,64,zoom);tx=x-(x-tx)*next/zoom;ty=y-(y-ty)*next/zoom;zoom=next;camera();saveCamera()}
@@ -156,7 +238,7 @@ function saveCamera(){
 }
 async function loadCamera(){
  const rev=cameraRevision;
- try{const r=await fetch("/api/camera",{cache:"no-store"});if(!r.ok)throw Error("camera");const c=await r.json();if(rev!==cameraRevision)return;if(c.mode==="hex"||c.mode==="radial"||c.mode==="compact"){mode=c.mode;geometry=directedBlockLayout(counts.length,mode);reindex();for(const it of items){it.to=position(it);transform(it,it.to)}document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===mode));zoom=clamp(c.zoom,.025,64,fitZoom());tx=clamp(c.tx,-1e6,1e6);ty=clamp(c.ty,-1e6,1e6);decorate();requestFrame()}}
+ try{const r=await fetch("/api/camera",{cache:"no-store"});if(!r.ok)throw Error("camera");const c=await r.json();if(rev!==cameraRevision)return;if(c.mode==="hex"||c.mode==="radial"||c.mode==="compact"){mode=c.mode;prepareLayout();for(const it of items){it.to=position(it);transform(it,it.to)}document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===mode));zoom=clamp(c.zoom,.025,64,fitZoom());tx=clamp(c.tx,-1e6,1e6);ty=clamp(c.ty,-1e6,1e6);decorate();requestFrame()}}
  catch{byId("cameraStatus").textContent="Камера: стандартное положение"}
  finally{cameraLoaded=true;if(rev!==cameraRevision)saveCamera()}
 }
@@ -172,7 +254,7 @@ function syncMap(next:ChatCluster[]){
  if(next.length<clusters.length||clusters.some((c,i)=>next[i].id!==c.id||next[i].count<c.count))return;
  const oldFit=fitZoom(),oldLength=clusters.length,changed=next.length!==oldLength||next.some((c,i)=>c.count!==counts[i]);
  if(!changed)return;
- clusters=next;names.splice(0,names.length,...next.map(c=>"B"+c.id));counts.splice(0,counts.length,...next.map(c=>c.count));geometry=directedBlockLayout(counts.length,mode);reindex();
+ clusters=next;names.splice(0,names.length,...next.map(c=>"B"+c.id));counts.splice(0,counts.length,...next.map(c=>c.count));prepareLayout();
  for(let i=0;i<clusters.length;i++){
   const c=clusters[i];let b=legend.children[i] as HTMLButtonElement|undefined;
   if(!b){b=document.createElement("button");b.className="legend-row";b.style.setProperty("--c",color(i));const sw=document.createElement("i"),title=document.createElement("span"),count=document.createElement("span");title.textContent="Блок "+c.id;b.append(sw,title,count);b.onclick=()=>select(i);b.ondblclick=()=>focusCluster(i);legend.append(b)}
@@ -196,10 +278,11 @@ async function openHistory(i:number){
 liveButton.onclick=()=>{if(selected>=0)select(selected);else void openHistory(-1)};
 function screenPoint(p:Point):Point{const m=world.getScreenCTM();if(!m)return{x:0,y:0};const s=new DOMPoint(p.x,p.y).matrixTransform(m);return{x:s.x,y:s.y}}
 function corePoint(){return screenPoint({x:0,y:0})}
-function cloudPoint():Point{
- const m=group("cloudIcon").getScreenCTM();if(!m)return corePoint();
+function modulePoint(id:string):Point{
+ const m=group(id).getScreenCTM();if(!m)return corePoint();
  const p=new DOMPoint(0,0).matrixTransform(m);return{x:p.x,y:p.y};
 }
+function cloudPoint(){return modulePoint("cloudIcon")}
 function chatPoint():Point{const r=chatPrompt.getBoundingClientRect();return r.width&&r.height?{x:r.left+r.width*.5,y:r.top+r.height*.5}:corePoint()}
 function replyPoint():Point{
  const r=messages.getBoundingClientRect();return r.width&&r.height?{x:r.left+r.width*.5,y:r.bottom-18}:chatPoint();
@@ -220,8 +303,8 @@ function clearFlow(){
  for(const [target,timer] of arrivalTimers){window.clearTimeout(timer);target.classList.remove("arrived-request","arrived-reply","arrived-memory","arrived-error")}
  arrivalTimers.clear();pendingClusters.clear();renderKey="";
 }
-function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"):Promise<void>{
- if(motionOff()||document.hidden)return Promise.resolve();
+function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"|"work"|"docs"):Promise<void>{
+ if(motionOff()||document.hidden||flowLegs.size>=12)return Promise.resolve();
  return new Promise(resolve=>{
   const layer=byId("traffic"),cls="quiet-"+kind;
   const line=el("line",{class:"quiet-route "+cls},layer);
@@ -296,7 +379,7 @@ async function initChat(){
  catch{chatStatus.textContent="Не удалось загрузить локальную память. Обновите страницу."}
  finally{sendButton.disabled=!ready;chatPrompt.disabled=!ready}
 }
-document.addEventListener("visibilitychange",()=>{if(document.hidden)clearFlow();else{renderKey="";requestFrame();if(ready&&!busy)void snapshot().then(s=>{syncMap(s.clusters);if(selected<0)s.messages.forEach(appendMessage)}).catch(()=>{})}});
+document.addEventListener("visibilitychange",()=>{if(document.hidden)clearFlow();else{renderKey="";requestFrame();void refreshWorkspaceMap();if(ready&&!busy)void snapshot().then(s=>{syncMap(s.clusters);if(selected<0)s.messages.forEach(appendMessage)}).catch(()=>{})}});
 void initChat();
 async function checkHealth(){try{const r=await fetch("/api/chat/health",{cache:"no-store"});if(!r.ok)throw Error("health");const h=await r.json();byId("memoryHealth").textContent=h.ok?"SQLite: целостность подтверждена · "+h.messages+" сообщений":"SQLite: обнаружена аномалия · "+h.issues.join(", ")}catch{byId("memoryHealth").textContent="Диагностика памяти недоступна"}}
 byId("checkMemory").onclick=()=>void checkHealth();void checkHealth();
@@ -346,6 +429,33 @@ void cloudAction("status");
 function bindOrbit(id:string,open:()=>void){
  const icon=group(id);icon.addEventListener("click",open);icon.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();open()}});
 }
-setupWorkspace(bindOrbit);
+const activityCounts=new Map<string,number>();
+async function moduleRequest<T>(id:"workIcon"|"docsIcon",operation:()=>Promise<T>):Promise<T>{
+ const icon=group(id),kind=id==="workIcon"?"work":"docs";
+ activityCounts.set(id,(activityCounts.get(id)??0)+1);icon.classList.add("module-working");
+ try{
+  await playLeg(corePoint,()=>modulePoint(id),kind);arrival(icon,"request");
+  const result=await operation();
+  await playLeg(()=>modulePoint(id),corePoint,kind);arrival(group("core"),"reply");
+  void refreshWorkspaceMap();return result;
+ }catch(e){arrival(icon,"error");throw e}
+ finally{const n=(activityCounts.get(id)??1)-1;activityCounts.set(id,n);if(n===0)icon.classList.remove("module-working")}
+}
+setupWorkspace(bindOrbit,moduleRequest);
+for(const icon of moduleList()){
+ const show=()=>hover("module",0,icon.id);
+ icon.addEventListener("pointerenter",show);icon.addEventListener("pointerleave",unhover);icon.addEventListener("focus",show);icon.addEventListener("blur",unhover);
+}
+byId("fileDetailClose").onclick=()=>byId<HTMLDialogElement>("fileDetail").close();
+const full=byId("fullMap");
+function setFull(on:boolean){document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));requestFrame()}
+full.onclick=async()=>{
+ const on=!document.body.classList.contains("full-map");setFull(on);
+ if(on&&!document.fullscreenElement&&document.documentElement.requestFullscreen){try{await document.documentElement.requestFullscreen()}catch{/* map-only fallback */}}
+ else if(!on&&document.fullscreenElement){try{await document.exitFullscreen()}catch{/* map-only fallback */}}
+};
+document.addEventListener("fullscreenchange",()=>{if(!document.fullscreenElement)setFull(false)});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.body.classList.contains("full-map")&&!document.fullscreenElement)setFull(false)});
+prepareLayout();decorate();zoom=fitZoom();requestFrame();void refreshWorkspaceMap();
 bindOrbit("settingsIcon",()=>{if(panel.hidden)toggle.click();byId("settingsClose").focus()});
 byId("settingsClose").onclick=()=>{if(!panel.hidden)toggle.click()};

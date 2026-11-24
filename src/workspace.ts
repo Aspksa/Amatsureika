@@ -20,7 +20,9 @@ async function api<T>(path:string,body?:object):Promise<T>{
 }
 function err(e:unknown){return e instanceof Error?e.message:"Операция не выполнена"}
 function localDate(){const d=new Date();return [d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-")}
-export function setupWorkspace(bind:(id:string,open:()=>void)=>void){
+export function setupWorkspace(bind:(id:string,open:()=>void)=>void,run:<T>(id:"workIcon"|"docsIcon",operation:()=>Promise<T>)=>Promise<T>){
+ const workApi=<T>(path:string,body?:object)=>run("workIcon",()=>api<T>(path,body));
+ const diskApi=<T>(path:string,body?:object)=>run("docsIcon",()=>api<T>(path,body));
  const wd=id<HTMLDialogElement>("workDialog"),dd=id<HTMLDialogElement>("diskDialog");
  let rows:RecordRow[]=[],kind:WorkKind="staff",editing:number|null=null,workBusy=false;
  const workStatus=id("workStatus"),workForm=id<HTMLFormElement>("workForm"),workFields=id("workFields"),workTable=id("workTable"),workFilter=id<HTMLInputElement>("workSearch"),archived=id<HTMLInputElement>("workArchived");
@@ -57,10 +59,10 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void){
   }
   table.append(body);workTable.append(table);
  }
- async function loadWork(reset=true){const result=await api<{records:RecordRow[]}>("/api/work");rows=result.records;renderWork();if(reset)edit()}
+ async function loadWork(reset=true){const result=await workApi<{records:RecordRow[]}>("/api/work");rows=result.records;renderWork();if(reset)edit()}
  async function changeWork(payload:object){
   if(workBusy)return;workBusy=true;workStatus.textContent="Сохранение…";
-  try{await api("/api/work",payload);await loadWork();workStatus.textContent="Сохранено локально"}
+  try{await workApi("/api/work",payload);await loadWork();workStatus.textContent="Сохранено локально"}
   catch(e){workStatus.textContent=err(e)}
   finally{workBusy=false}
  }
@@ -94,12 +96,12 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void){
   }
  }
  async function preview(r:Entry){
-  try{const response=await fetch("/api/disk/download?id="+r.id);if(!response.ok)throw Error("Файл недоступен");id("diskPreviewTitle").textContent=r.name;id("diskPreviewText").textContent=await response.text();id("diskPreview").hidden=false}
+  try{const text=await run("docsIcon",async()=>{const response=await fetch("/api/disk/download?id="+r.id);if(!response.ok)throw Error("Файл недоступен");return response.text()});id("diskPreviewTitle").textContent=r.name;id("diskPreviewText").textContent=text;id("diskPreview").hidden=false}
   catch(e){diskStatus.textContent=err(e)}
  }
  async function refreshDisk(){
   const rev=++revision,folder=parent,inTrash=trash;diskStatus.textContent="Загрузка…";id("diskPreview").hidden=true;
-  try{const state=await api<DiskState>("/api/disk?"+(inTrash?"trash=1":folder===null?"":"parent="+folder));if(rev!==revision)return;
+  try{const state=await diskApi<DiskState>("/api/disk?"+(inTrash?"trash=1":folder===null?"":"parent="+folder));if(rev!==revision)return;
    entries=state.entries;const crumbs=id("diskCrumbs");crumbs.replaceChildren(button("Документы",()=>{trash=false;parent=null;void refreshDisk()}));
    if(inTrash)crumbs.append(node("span"," / Корзина"));else for(const c of state.crumbs){crumbs.append(node("span"," / "),button(c.name,()=>{parent=c.id;void refreshDisk()}))}
    id<HTMLButtonElement>("diskFolder").disabled=inTrash;upload.disabled=inTrash;id<HTMLButtonElement>("diskTrash").textContent=inTrash?"К файлам":"Корзина";renderDisk();diskStatus.textContent=entries.length+" объектов · локально";
@@ -107,7 +109,7 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void){
  }
  async function diskChange(payload:object){
   if(diskBusy)return;diskBusy=true;
-  try{await api("/api/disk",payload);await refreshDisk()}catch(e){diskStatus.textContent=err(e)}finally{diskBusy=false}
+  try{await diskApi("/api/disk",payload);await refreshDisk()}catch(e){diskStatus.textContent=err(e)}finally{diskBusy=false}
  }
  id("diskFolder").onclick=()=>{if(trash)return;const name=window.prompt("Название папки");if(name)void diskChange({action:"folder",parent,name})};
  id("diskTrash").onclick=()=>{trash=!trash;parent=null;diskSearch.value="";void refreshDisk()};
@@ -119,7 +121,7 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void){
   for(const file of files){
    try{if(file.size>25*1024*1024)throw Error("лимит 25 МиБ");
     diskStatus.textContent="Загрузка: "+file.name;const query=new URLSearchParams({name:file.name});if(folder!==null)query.set("parent",String(folder));
-    const response=await fetch("/api/disk/upload?"+query,{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});const result=await response.json();if(!response.ok)throw Error(result.error||"Ошибка загрузки");
+    await run("docsIcon",async()=>{const response=await fetch("/api/disk/upload?"+query,{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});const result=await response.json();if(!response.ok)throw Error(result.error||"Ошибка загрузки")});
    }catch(e){errors.push(file.name+": "+err(e))}
   }
   upload.value="";diskBusy=false;upload.disabled=trash;await refreshDisk();if(errors.length)diskStatus.textContent=errors.join("; ");
