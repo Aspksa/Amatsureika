@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -13,7 +14,7 @@ with tempfile.TemporaryDirectory() as directory:
     req={"text":"test","request_id":str(uuid4())}
     store.append(req)
     assert ChatStore(path).append(req)["duplicate"]
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         try:
             db.execute("INSERT INTO chat_messages(cluster_id,position,role,text,created_at,request_id) VALUES(1,201,'user','x','now','x')")
             raise AssertionError("capacity violation accepted")
@@ -30,7 +31,7 @@ with tempfile.TemporaryDirectory() as directory:
 with tempfile.TemporaryDirectory() as directory:
     path=Path(directory)/"large.db"
     store=ChatStore(path)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         for c in range(1,501):
             db.execute("INSERT INTO chat_clusters(id,previous_id,created_at) VALUES(?,?,?)",(c,c-1 if c>1 else None,"now"))
             db.executemany("INSERT INTO chat_messages(cluster_id,position,role,text,created_at,request_id) VALUES(?,?,?,?,?,?)", ((c,n,"user" if n%2 else "assistant","test","now",f"{c}-{(n+1)//2}") for n in range(1,201)))
