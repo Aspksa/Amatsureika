@@ -18,7 +18,9 @@ let renderKey="",mapRevision=0;
 const key=(i:number,n:number,outer:boolean)=>i+":"+n+":"+outer;
 const counts:number[]=[];
 type ChatCluster={id:number;previous_id:number|null;count:number};
-type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string};
+type ResultSource={source:"memory"|"work"|"file";id:number;title:string};
+type ResultMeta={style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
+type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string;metadata?:ResultMeta};
 type Snapshot={clusters:ChatCluster[];messages:ChatMessage[];duplicate?:boolean};
 let clusters:ChatCluster[]=[];
 type Endpoint=()=>Point;
@@ -345,13 +347,34 @@ function renderMarkdown(root:HTMLElement,text:string){
   else{list=null;const p=document.createElement("p");inline(p,line);root.append(p)}
  }flushCode()
 }
+function sourceAction(h:ResultSource){
+ if(busy)return;
+ if(h.source==="memory"){const i=clusters.findIndex(c=>c.id===h.id);if(i>=0)focusCluster(i);else chatStatus.textContent="Источник недоступен"}
+ else if(h.source==="work"){const r=workspaceMap.records.find(x=>x.id===h.id);if(r)void workspaceUI.openRecord(r.kind,r.id);else chatStatus.textContent="Запись недоступна или архивирована"}
+ else{const f=workspaceMap.files.find(x=>x.id===h.id);if(f){byId<HTMLAnchorElement>("fileDownload").href="/api/disk/download?id="+f.id;byId("fileDetailName").textContent=f.name;byId("fileDetailSize").textContent=(f.size/1024).toLocaleString("ru",{maximumFractionDigits:1})+" КБ";byId<HTMLDialogElement>("fileDetail").showModal()}else chatStatus.textContent="Файл недоступен"}
+}
+function resultCard(meta:ResultMeta){
+ const root=document.createElement("details");root.className="chat-result";const summary=document.createElement("summary");summary.textContent="Источники и инструменты"+(meta.tools?.length?" · "+meta.tools.join(", "):"");root.append(summary);
+ if(meta.steps?.length){const p=document.createElement("p");p.textContent=meta.steps.map(s=>s.tool+" · "+s.status).join(" / ");root.append(p)}
+ for(const h of meta.sources??[]){const b=document.createElement("button");b.type="button";b.textContent=h.title+" · #"+h.id;b.onclick=()=>sourceAction(h);root.append(b)}
+ for(const h of meta.web_sources??[]){const div=document.createElement("div"),a=document.createElement("a");try{if(new URL(h.url).protocol!=="https:")continue}catch{continue}a.href=h.url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=h.title;div.append(a);const p=document.createElement("p");p.textContent=(h.date||"Дата не указана")+" · непроверенная выдержка: "+h.excerpt;div.append(p);root.append(div)}
+ if(meta.warnings?.length){const p=document.createElement("p");p.textContent=meta.warnings.join(" ");p.className="result-warning";root.append(p)}
+ if(meta.table){const t=meta.table,wrap=document.createElement("div"),table=document.createElement("table"),head=document.createElement("tr"),body=document.createElement("tbody");wrap.className="chat-table-scroll";for(let i=0;i<t.columns.length;i++){const th=document.createElement("th"),b=document.createElement("button");b.type="button";b.textContent=t.columns[i];let asc=true;b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((x,y)=>(x.cells[i].textContent??"").localeCompare(y.cells[i].textContent??"","ru",{numeric:true})*(asc?1:-1));asc=!asc;body.append(...rows)};th.append(b);head.append(th)}table.append(head);for(const row of t.rows){const tr=document.createElement("tr");for(const v of row){const td=document.createElement("td");td.textContent=v;tr.append(td)}body.append(tr)}table.append(body);wrap.append(table);root.append(wrap);const p=document.createElement("p");p.textContent="Показано "+t.rows.length+" из "+t.total_rows;root.append(p)}
+ if(meta.series?.length){const chart=document.createElement("div");chart.className="chat-series";root.append(chart);drawSeries(meta.series,chart);root.open=true}
+ return root;
+}
 function appendMessage(m:ChatMessage){
  if(messages.querySelector('[data-message="'+m.id+'"]'))return;
  const article=document.createElement("article");article.className="chat-message "+(m.role==="user"?"user-message":"reply");article.dataset.message=String(m.id);article.dataset.role=m.role;
  article.dataset.raw=m.text;const content=document.createElement("div");content.className="message-content";if(m.role==="assistant")renderMarkdown(content,m.text);else{const p=document.createElement("p");p.textContent=m.text;content.append(p)}article.append(content);
+ if(m.role==="assistant"&&m.metadata&&(m.metadata.tools?.length||m.metadata.sources?.length||m.metadata.web_sources?.length||m.metadata.warnings?.length))article.append(resultCard(m.metadata));
  const actions=document.createElement("div");actions.className="message-actions";
  const copy=document.createElement("button");copy.type="button";copy.textContent="Копировать";copy.onclick=()=>void copyText(m.text);actions.append(copy);
  if(m.role==="user"){const reuse=document.createElement("button");reuse.type="button";reuse.textContent="Повторить";reuse.onclick=()=>{if(busy)return;if(selected>=0)select(selected);chatPrompt.value=m.text.slice(0,1000);resizePrompt();chatPrompt.focus()};actions.append(reuse)}
+ if(m.role==="assistant"){
+  const draft=document.createElement("button");draft.type="button";draft.textContent="Черновик Word";draft.onclick=async()=>{if(busy)return;if(m.text.length>4000){chatStatus.textContent="Для черновика выберите текст до 4000 символов";return}if(!confirm("Сохранить этот ответ как локальный DOCX-черновик?"))return;draft.disabled=true;try{const r=await agentApi<{name:string}>("cognitive",{action:"draft",title:"Ответ #"+m.id,body:m.text,confirm:true});chatStatus.textContent="Черновик: "+r.name;await refreshWorkspaceMap(true)}catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка"}finally{draft.disabled=false}};actions.append(draft);
+  const correct=document.createElement("button");correct.type="button";correct.textContent="Исправить";correct.onclick=()=>{if(busy)return;const d=byId<HTMLDialogElement>("correctionDialog");byId<HTMLInputElement>("correctionId").value=String(m.id);byId<HTMLTextAreaElement>("correctionText").value="";d.showModal()};actions.append(correct);
+ }
  const locate=document.createElement("button");locate.type="button";locate.textContent="На карте";locate.onclick=()=>{if(busy)return;const i=clusters.findIndex(c=>c.id===m.cluster_id);if(i>=0)focusCluster(i)};actions.append(locate);
  article.append(actions);messages.append(article);while(messages.children.length>500)messages.firstElementChild?.remove();messages.scrollTop=messages.scrollHeight;
 }
@@ -433,7 +456,7 @@ async function remember(s:Snapshot){
 }
 type SearchHit={source:"memory"|"work"|"file";id:number;title:string;text:string;updated:string;age_days:number;coverage:number};
 type EditPreview={id:number;kind:string;field:string;label:string;before:string|number;after:string|number;version:string};
-type RoutePlan={missing?:string[];mutation?:EditPreview|null;token:string;hits:SearchHit[];intent:string;sufficient:boolean;conflicts:string[];context:string;local:string;fts:boolean};
+type RoutePlan={web_offer?:{query:string;action:string}|null;metadata?:ResultMeta;missing?:string[];mutation?:EditPreview|null;token:string;hits:SearchHit[];intent:string;sufficient:boolean;conflicts:string[];context:string;local:string;fts:boolean};
 async function routingPost<T>(path:string,body:object):Promise<T>{
  const r=await fetch("/api/routing/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
  const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка поиска");return data as T;
@@ -477,6 +500,7 @@ async function retrieveAnimation(hits:SearchHit[]){
   await playLeg(target,corePoint,kind);arrival(group("core"),"reply");
  }));
 }
+function chatPhase(phase:string){group("chatIcon").dataset.phase=phase;chat.dataset.phase=phase}
 function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
  const dialog=byId<HTMLDialogElement>("routingConsent");
  byId("routingQuestion").textContent=text;
@@ -497,7 +521,7 @@ function approveEdit(m:EditPreview):Promise<boolean>{
 form.onsubmit=async e=>{
  e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||attaching||!ready||selected>=0)return;
  const paid=cloudAvailable&&!localOnly;
- busy=true;preparing=true;cancelPreparation=false;updateToolState();sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Поиск в локальной памяти…";
+ busy=true;preparing=true;cancelPreparation=false;chatPhase("search");updateToolState();sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Поиск в локальной памяти…";
  if(!pending||pending.text!==raw)pending={text:raw,request_id:crypto.randomUUID()};
  const request=pending;let plan:RoutePlan|undefined,approved=false,editApproved=false;
  try{
@@ -509,13 +533,21 @@ form.onsubmit=async e=>{
     await refreshWorkspaceMap();
     chatStatus.textContent="Найдено источников: "+plan.hits.length+(plan.fts?" · FTS5":" · ограниченный поиск");
     checkPreparation();await retrieveAnimation(plan.hits);checkPreparation();
+    if(plan.web_offer&&!localOnly&&confirm("Разрешить интернет-поиск? Внешнему поисковику будет отправлено только:\n"+plan.web_offer.query+"\nРежим: "+plan.web_offer.action)){
+     checkPreparation();chatPhase("web");chatStatus.textContent="Интернет: получение источников…";
+     const icon=group("webIcon");icon.classList.add("module-working");
+     try{await playLeg(corePoint,()=>modulePoint("webIcon"),"request");checkPreparation();plan=await routingPost<RoutePlan>("web",{token:plan.token,...plan.web_offer,confirm:true});await playLeg(()=>modulePoint("webIcon"),corePoint,"reply");arrival(group("core"),"reply")}
+     catch(e){chatStatus.textContent="Интернет недоступен: "+(e instanceof Error?e.message:"ошибка");if(cancelPreparation)throw e}
+     finally{icon.classList.remove("module-working")}
+    }
+    checkPreparation();chatPhase("tool");
     if(plan.mutation)editApproved=await approveEdit(plan.mutation);
     else approved=!!(requested&&cloudAvailable&&!localOnly&&!plan.sufficient&&await approveCloud(request.text,plan));
     checkPreparation();preparing=false;updateToolState();
     chatStatus.textContent=approved?"Cloud.ru: отправка подтверждена…":plan.sufficient?"Локальный ответ…":"Локальные результаты · без Cloud.ru";
     return approved;
    },
-   waiting:active=>{group("cloudIcon").classList.toggle("cloud-waiting",active);if(active)chatStatus.textContent="Cloud.ru: ожидание ответа…"},
+   waiting:active=>{chatPhase(active?"cloud":"reply");group("cloudIcon").classList.toggle("cloud-waiting",active);if(active)chatStatus.textContent="Cloud.ru: ожидание ответа…"},
    send:async()=>{
     if(!plan)throw Error("Нет плана поиска");
     const body={text:request.text,request_id:request.request_id,token:plan.token,cloud:approved,approve_edit:editApproved};
@@ -534,7 +566,7 @@ form.onsubmit=async e=>{
   if(editApproved)void refreshWorkspaceMap();
   chatStatus.textContent=(approved?"Cloud.ru":"Локальный ответ")+" · сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
  }catch(error){clearFlow();if(cancelPreparation){chatStatus.textContent="Подготовка отменена. Запрос не отправлен.";return}arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":(error instanceof Error?error.message:"Операция не завершена")+". Проверьте результат перед повтором.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";resizePrompt();messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
- finally{busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
+ finally{chatPhase("idle");busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
  sendButton.disabled=true;chatPrompt.disabled=true;
@@ -738,6 +770,9 @@ async function webRun(action:string,input?:string){
 }
 byId("toolWeb").onclick=()=>{closeTools();webFields();webDialog.showModal()};
 byId("webClose").onclick=()=>webDialog.close();
+bindOrbit("webIcon",()=>{if(!busy){webFields();webDialog.showModal()}});
+byId("correctionClose").onclick=()=>byId<HTMLDialogElement>("correctionDialog").close();
+byId<HTMLFormElement>("correctionForm").onsubmit=async e=>{e.preventDefault();const d=byId<HTMLDialogElement>("correctionDialog"),text=byId<HTMLTextAreaElement>("correctionText").value.trim();if(!text)return;const btn=byId<HTMLButtonElement>("correctionSave");btn.disabled=true;try{await routingPost("correction",{message:Number(byId<HTMLInputElement>("correctionId").value),text,confirm:true});d.close();chatStatus.textContent="Исправление сохранено как кандидат, не подтверждённый факт";if(!busy&&selected<0){chatPrompt.value=("Исправление: "+text).slice(0,1000);resizePrompt();chatPrompt.focus()}}catch(e){byId("correctionStatus").textContent=e instanceof Error?e.message:"Ошибка"}finally{btn.disabled=false}};
 byId<HTMLFormElement>("webForm").onsubmit=e=>{e.preventDefault();const action=webActionSelect.value,input=webInput.value.trim();if(action==="watch"&&!confirm("Разрешить автоматическую проверку этого публичного сайта раз в час при работающем сервере?"))return;void webRun(action,input)};
 byId("webCopy").onclick=()=>void copyText(webOutput.innerText);
 byId("webToChat").onclick=()=>{if(busy||selected>=0)return;const excerpt=webOutput.innerText.trim();if(!excerpt)return;chatPrompt.value=("Проанализируй эти интернет-выдержки (не проверенные факты):\n"+excerpt).slice(0,1000);resizePrompt();webDialog.close();chatPrompt.focus()};
@@ -814,8 +849,8 @@ function cognitiveFields(){
 cognitiveSelect.onchange=cognitiveFields;
 byId("toolCognitive").onclick=()=>{closeTools();cognitiveFields();cognitiveDialog.showModal()};
 byId("cognitiveClose").onclick=()=>cognitiveDialog.close();
-function drawSeries(values:number[]){
- const container=byId("cognitiveChart");container.replaceChildren();if(values.length<2||values.some(v=>!Number.isFinite(v)))return;
+function drawSeries(values:number[],container:HTMLElement=byId("cognitiveChart")){
+ container.replaceChildren();if(values.length<2||values.some(v=>!Number.isFinite(v)))return;
  const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");
  svg.setAttribute("viewBox","0 0 600 220");svg.setAttribute("role","img");svg.setAttribute("aria-label","Линейный график фактических наблюдений");
  function node(name:string,attrs:Record<string,string>,text?:string){const n=document.createElementNS(ns,name);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,v);if(text!==undefined)n.textContent=text;svg.append(n);return n}
@@ -823,7 +858,7 @@ function drawSeries(values:number[]){
  for(let i=0;i<=4;i++){const y=20+170*i/4,v=high-(high-low)*i/4;node("line",{x1:"65",x2:"585",y1:String(y),y2:String(y),stroke:"#29434f","stroke-width":".8"});node("text",{x:"60",y:String(y+4),fill:"#a7c8c9","font-size":"11","text-anchor":"end"},Number(v.toPrecision(5)).toString())}
  const pts=values.map((v,i)=>[65+520*i/(values.length-1),high===low?105:20+170*(high-v)/span]);
  node("polyline",{points:pts.map(p=>p.join(",")).join(" "),fill:"none",stroke:"#77d9c7","stroke-width":"2","stroke-linejoin":"round"});
- if(values.length<=80)for(const [x,y] of pts)node("circle",{cx:String(x),cy:String(y),r:"2.5",fill:"#77d9c7"});
+ if(values.length<=80)pts.forEach(([x,y],i)=>{const point=node("circle",{cx:String(x),cy:String(y),r:"3",fill:"#77d9c7",tabindex:"0"});const title=document.createElementNS(ns,"title");title.textContent="№"+(i+1)+": "+values[i];point.append(title);point.setAttribute("aria-label",title.textContent)});
  node("text",{x:"65",y:"210",fill:"#a7c8c9","font-size":"11"},"1");node("text",{x:"585",y:"210",fill:"#a7c8c9","font-size":"11","text-anchor":"end"},String(values.length));container.append(svg)
 }
 function displayCognitive(result:Record<string,unknown>){

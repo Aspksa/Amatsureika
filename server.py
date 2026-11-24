@@ -96,7 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -187,6 +187,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(self.router.search_tool(value))
             if path == "/api/routing/calculate":
                 return self.send_json(calculate(value))
+            if path == "/api/routing/correction":
+                return self.send_json(self.router.correction(value))
+            if path == "/api/routing/web":
+                return self.send_json(self.router.authorize_web(value))
             if path == "/api/routing/plan":
                 return self.send_json(self.router.plan(value))
             if path == "/api/routing/execute":
@@ -224,7 +228,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (sqlite3.Error, RuntimeError, OSError):
             self.send_json({"error": "Local memory unavailable"}, 503)
         except (ValueError, TypeError, OverflowError) as exc:
-            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute","/api/routing/search","/api/routing/calculate","/api/routing/tools","/api/routing/report") or path.startswith("/api/agent/") else "Invalid settings"}, 400)
+            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute","/api/routing/search","/api/routing/calculate","/api/routing/tools","/api/routing/report","/api/routing/web","/api/routing/correction") or path.startswith("/api/agent/") else "Invalid settings"}, 400)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

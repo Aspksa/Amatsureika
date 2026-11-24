@@ -1,5 +1,6 @@
 """Chronological chat clusters, 200 committed messages each, one local SQLite DB."""
 import sqlite3
+import json
 import logging
 from contextlib import closing
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ class ChatStore:
                     text TEXT NOT NULL, created_at TEXT NOT NULL, request_id TEXT NOT NULL,
                     UNIQUE(cluster_id, position), UNIQUE(request_id, role)
                 );
+                CREATE TABLE IF NOT EXISTS chat_result_meta(request_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TRIGGER IF NOT EXISTS chat_capacity_insert BEFORE INSERT ON chat_messages
                 WHEN NEW.position < 1 OR NEW.position > 200 OR
                      (SELECT COUNT(*) FROM chat_messages WHERE cluster_id=NEW.cluster_id) >= 200
@@ -92,7 +94,7 @@ class ChatStore:
                 rows = db.execute("SELECT * FROM chat_messages WHERE cluster_id=? ORDER BY position", (cluster,)).fetchall()
             return {"clusters": clusters, "messages": [dict(row) for row in rows]}
 
-    def append(self, value, reply=LOCAL_REPLY):
+    def append(self, value, reply=LOCAL_REPLY, metadata=None):
         if not self.startup_health["ok"]:
             raise RuntimeError("Chat integrity check failed; writes disabled")
         if not isinstance(value, dict) or set(value) != {"text", "request_id"}:
@@ -111,7 +113,7 @@ class ChatStore:
             if existing:
                 if existing[0]["text"] != text:
                     raise ValueError("Request already used")
-                return {"clusters": self.clusters(db), "messages": [dict(row) for row in existing], "duplicate": True}
+                return {"clusters": self.clusters(db), "messages": self.with_metadata(db,existing), "duplicate": True}
             last = db.execute("SELECT id FROM chat_clusters ORDER BY id DESC LIMIT 1").fetchone()
             cid = last["id"] if last else db.execute("INSERT INTO chat_clusters(previous_id,created_at) VALUES(NULL,?)", (now,)).lastrowid
             n = db.execute("SELECT COUNT(*) FROM chat_messages WHERE cluster_id=?", (cid,)).fetchone()[0]
@@ -124,6 +126,9 @@ class ChatStore:
                 row = db.execute("INSERT INTO chat_messages(cluster_id,position,role,text,created_at,request_id) VALUES(?,?,?,?,?,?)",
                                  (cid,n,role,body,now,rid))
                 saved.append(dict(db.execute("SELECT * FROM chat_messages WHERE id=?", (row.lastrowid,)).fetchone()))
+            if metadata is not None:
+                db.execute("INSERT INTO chat_result_meta VALUES(?,?)",(rid,json.dumps(metadata,ensure_ascii=False)))
+                saved[-1]["metadata"]=metadata
             if n == CAPACITY:
                 db.execute("INSERT INTO chat_clusters(previous_id,created_at) VALUES(?,?)", (cid,now))
             return {"clusters": self.clusters(db), "messages": saved, "duplicate": False}
@@ -144,6 +149,15 @@ class ChatStore:
             ordinal = offsets[m["cluster_id"]] + m["position"] - 1
             converted.append({**m, "cluster_id": ordinal//500+1, "position": ordinal%500+1})
         return {"clusters": blocks, "messages": converted}
+
+    def with_metadata(self,db,rows):
+        result=[dict(r) for r in rows]
+        ids=[r["request_id"] for r in result if r["role"]=="assistant"]
+        if ids:
+            meta={r["request_id"]:json.loads(r["payload"]) for r in db.execute("SELECT * FROM chat_result_meta WHERE request_id IN ("+",".join("?" for _ in ids)+")",ids)}
+            for row in result:
+                if row["role"]=="assistant" and row["request_id"] in meta:row["metadata"]=meta[row["request_id"]]
+        return result
 
     def memory_snapshot(self, block=None):
         with closing(self.connect()) as db, db:
@@ -166,10 +180,10 @@ class ChatStore:
                     offset = end
                     if offset >= hi:
                         break
-            return self.project(pages, [dict(r) for r in rows])
+            return self.project(pages, self.with_metadata(db,rows))
 
-    def memory_append(self, value, reply=LOCAL_REPLY):
-        result = self.append(value, reply)
+    def memory_append(self, value, reply=LOCAL_REPLY, metadata=None):
+        result = self.append(value, reply,metadata)
         return {**self.project(result["clusters"], result["messages"]), "duplicate": result["duplicate"]}
 
     def existing_request(self, value):
@@ -179,4 +193,4 @@ class ChatStore:
                 return None
             if rows[0]["text"] != value["text"].strip():
                 raise ValueError("Request already used")
-            return {**self.project(self.clusters(db), [dict(r) for r in rows]), "duplicate": True}
+            return {**self.project(self.clusters(db), self.with_metadata(db,rows)), "duplicate": True}
