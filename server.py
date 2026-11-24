@@ -3,6 +3,7 @@ import json
 import sqlite3
 from urllib.parse import urlsplit, parse_qs, quote
 from workspace import Workspace, LIMIT
+from routing import Router
 import shutil
 from chat_store import ChatStore
 from cloud_client import Cloud, CloudError
@@ -14,11 +15,12 @@ from pathlib import Path
 import webbrowser
 
 class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, store, chat, cloud, workspace, **kwargs):
+    def __init__(self, *args, store, chat, cloud, workspace, router, **kwargs):
         self.store = store
         self.chat = chat
         self.cloud = cloud
         self.workspace = workspace
+        self.router = router
         super().__init__(*args, **kwargs)
 
     def send_json(self, value, status=200):
@@ -92,7 +94,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -115,9 +117,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "Expected JSON"}, 415)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work") else 4096):
+            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
+            if path == "/api/routing/plan":
+                return self.send_json(self.router.plan(value))
+            if path == "/api/routing/execute":
+                return self.send_json(self.router.execute(value))
             if path == "/api/work":
                 return self.send_json(self.workspace.save_work(value))
             if path == "/api/disk":
@@ -151,7 +157,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (sqlite3.Error, RuntimeError, OSError):
             self.send_json({"error": "Local memory unavailable"}, 503)
         except (ValueError, TypeError, OverflowError) as exc:
-            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk") else "Invalid settings"}, 400)
+            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute") else "Invalid settings"}, 400)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -161,7 +167,13 @@ if __name__ == "__main__":
     root = Path(__file__).resolve().parent / "public"
     if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js", "workspace.js")):
         raise SystemExit("Build the frontend first: npm run build")
-    with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=DesignStore(args.data_dir / "amatsureika.db"), chat=ChatStore(args.data_dir / "amatsureika.db"), cloud=Cloud(args.data_dir / "amatsureika.db"), workspace=Workspace(args.data_dir / "amatsureika.db"))) as server:
+    path=args.data_dir / "amatsureika.db"
+    store=DesignStore(path)
+    chat=ChatStore(path)
+    cloud=Cloud(path)
+    workspace=Workspace(path)
+    router=Router(chat,workspace,cloud)
+    with ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root), store=store, chat=chat, cloud=cloud, workspace=workspace, router=router)) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
         print(url, flush=True)
         if not args.no_browser:

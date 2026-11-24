@@ -2,6 +2,7 @@
 export type Leg="chat-core"|"core-cloud"|"cloud-core"|"core-chat";
 export type FlowHooks<T>={
  leg:(leg:Leg)=>Promise<void>;
+ prepare?:(requested:boolean)=>Promise<boolean>;
  waiting:(active:boolean)=>void;
  send:()=>Promise<T>;
  committed:(result:T)=>void;
@@ -11,6 +12,7 @@ export type FlowHooks<T>={
 };
 export async function runQuietFlow<T>(paid:boolean,h:FlowHooks<T>):Promise<T>{
  await h.leg("chat-core");
+ if(h.prepare)paid=await h.prepare(paid);
  if(paid)await h.leg("core-cloud");
  if(paid)h.waiting(true);
  let result:T;

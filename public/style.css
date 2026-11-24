@@ -196,3 +196,7 @@ body.full-map #panel{display:none!important}
 #chatIcon{color:#77d9c7}
 #chatIcon.chat-open .cloud-shell{stroke-opacity:1}
 #chatIcon.arrived-reply .cloud-shell{stroke:#bacff4!important;filter:drop-shadow(0 0 4px #8eace6)!important}
+
+#routingConsent{width:min(720px,calc(100% - 28px))}
+#routingConsent pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#07131d;border:1px solid #29434f;padding:12px;border-radius:8px;max-height:35dvh;overflow:auto;color:#bed6de}
+#routingWarnings{color:#d9b07b}
