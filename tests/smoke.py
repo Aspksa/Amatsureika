@@ -21,7 +21,7 @@ def session(data_dir, expected=None):
                 page = response.read()
                 assert b'class="core-title"' not in page
                 assert b'class="core-wave"' not in page
-                for icon in (b'id="workIcon"',b'id="docsIcon"',b'id="settingsIcon"',b'id="cloudIcon"'):
+                for icon in (b'id="workIcon"',b'id="docsIcon"',b'id="settingsIcon"',b'id="cloudIcon"',b'id="chatIcon"'):
                     assert icon in page
             with urlopen(url+"api/work",timeout=10) as response:
                 assert json.load(response)=={"records":[]}

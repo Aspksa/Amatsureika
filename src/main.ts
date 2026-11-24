@@ -96,6 +96,7 @@ function highlightFrame(){
  el("line",{x1:0,y1:0,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links);
  if(h.kind==="memory"&&h.index>0){const prev=memoryPoint(h.index-1);el("line",{x1:prev.x,y1:prev.y,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links)}
  if(h.kind==="file"||h.kind==="work"){const icon=moduleList().find(x=>x.id===(h.kind==="file"?"docsIcon":"workIcon")),m=icon?.transform.baseVal.consolidate()?.matrix;if(m)el("line",{x1:m.e,y1:m.f,x2:p.x,y2:p.y,class:"hover-link",stroke:color},links)}
+ if(h.kind==="module"&&h.id==="chatIcon"){const stride=Math.max(1,Math.ceil(geometry.centers.length/36));for(let i=0;i<geometry.centers.length;i+=stride){const q=memoryPoint(i);el("line",{x1:p.x,y1:p.y,x2:q.x,y2:q.y,class:"sector-link",stroke:"#77d9c7"},links)}}
  if(h.kind==="module"&&(h.id==="workIcon"||h.id==="docsIcon")){const isWork=h.id==="workIcon",points=isWork?workPoints:filePoints;const stride=Math.max(1,Math.ceil(points.length/36));for(let i=0;i<points.length;i+=stride){const q=isWork?workPoint(i):filePoint(i);el("line",{x1:p.x,y1:p.y,x2:q.x,y2:q.y,class:"sector-link",stroke:isWork?"#d9b07b":"#b6a3e1"},links)}}
 }
 async function refreshWorkspaceMap(animate=false){
@@ -290,7 +291,18 @@ function drawEdges(){
 const chat=byId("chat"),chatToggle=byId("chatToggle"),messages=byId("messages"),chatPrompt=byId<HTMLInputElement>("prompt"),chatStatus=byId("chatStatus"),historyTitle=byId("historyTitle"),liveButton=byId("liveChat"),form=byId<HTMLFormElement>("chatForm"),sendButton=form.querySelector("button") as HTMLButtonElement;
 let busy=false,historyRevision=0,ready=false;
 let pending:{text:string;request_id:string;cloud:boolean}|null=null;
-chatToggle.onclick=()=>{chat.hidden=!chat.hidden;chatToggle.setAttribute("aria-expanded",String(!chat.hidden));if(!chat.hidden)chatPrompt.focus();requestFrame()};
+function syncChatIcons(){
+ const open=!chat.hidden&&!document.body.classList.contains("full-map");
+ chatToggle.setAttribute("aria-expanded",String(open));group("chatIcon").setAttribute("aria-expanded",String(open));group("chatIcon").classList.toggle("chat-open",open);
+}
+function toggleChat(){
+ if(document.body.classList.contains("full-map")){
+  setFull(false);if(document.fullscreenElement)void document.exitFullscreen().catch(()=>{});
+  chat.hidden=false;
+ }else chat.hidden=!chat.hidden;
+ syncChatIcons();if(!chat.hidden)chatPrompt.focus();requestFrame();
+}
+chatToggle.onclick=toggleChat;
 function syncMap(next:ChatCluster[]){
  if(next.some((c,i)=>!Number.isSafeInteger(c.id)||!Number.isInteger(c.count)||c.count<1||c.count>500||c.previous_id!==(i?next[i-1].id:null)||i<next.length-1&&c.count!==500))throw Error("Invalid cluster state");
  if(next.length<clusters.length||clusters.some((c,i)=>next[i].id!==c.id||next[i].count<c.count))return;
@@ -311,7 +323,7 @@ function appendMessage(m:ChatMessage){
 }
 async function snapshot(cluster?:number):Promise<Snapshot>{const r=await fetch("/api/memory"+(cluster===undefined?"":"?cluster="+cluster),{cache:"no-store"});if(!r.ok)throw Error("history");return r.json()}
 async function openHistory(i:number){
- const revision=++historyRevision;chat.hidden=false;chatToggle.setAttribute("aria-expanded","true");
+ const revision=++historyRevision;chat.hidden=false;syncChatIcons();
  historyTitle.textContent=i<0?"ТЕКУЩИЙ ДИАЛОГ":"АРХИВ · БЛОК "+clusters[i].id+" · "+counts[i]+"/500";
  liveButton.hidden=i<0;sendButton.disabled=i>=0||busy||!ready;chatPrompt.disabled=i>=0||!ready;
  try{const s=await snapshot(i<0?undefined:clusters[i].id);if(revision!==historyRevision)return;messages.replaceChildren();s.messages.forEach(appendMessage);syncMap(s.clusters);chatStatus.textContent=i<0?"Локальная память · Cloud.ru по запросу":"Архив · для отправки вернитесь в диалог"}
@@ -370,10 +382,10 @@ function updateFlow(now:number){
 }
 async function routeLeg(leg:Leg){
  switch(leg){
-  case "chat-core":await playLeg(chatPoint,corePoint,"request");arrival(group("core"),"request");break;
+  case "chat-core":await playLeg(chatPoint,()=>modulePoint("chatIcon"),"request");arrival(group("chatIcon"),"request");await playLeg(()=>modulePoint("chatIcon"),corePoint,"request");arrival(group("core"),"request");break;
   case "core-cloud":await playLeg(corePoint,cloudPoint,"request");arrival(group("cloudIcon"),"request");break;
   case "cloud-core":await playLeg(cloudPoint,corePoint,"reply");arrival(group("core"),"reply");break;
-  case "core-chat":await playLeg(corePoint,replyPoint,"reply");break;
+  case "core-chat":await playLeg(corePoint,()=>modulePoint("chatIcon"),"reply");arrival(group("chatIcon"),"reply");await playLeg(()=>modulePoint("chatIcon"),replyPoint,"reply");break;
  }
 }
 async function remember(s:Snapshot){
@@ -484,13 +496,14 @@ async function moduleRequest<T>(id:"workIcon"|"docsIcon",operation:()=>Promise<T
  finally{const n=(activityCounts.get(id)??1)-1;activityCounts.set(id,n);if(n===0)icon.classList.remove("module-working")}
 }
 const workspaceUI=setupWorkspace(bindOrbit,moduleRequest);
+bindOrbit("chatIcon",toggleChat);syncChatIcons();
 for(const icon of moduleList()){
  const show=()=>hover("module",0,icon.id);
  icon.addEventListener("pointerenter",show);icon.addEventListener("pointerleave",unhover);icon.addEventListener("focus",show);icon.addEventListener("blur",unhover);
 }
 byId("fileDetailClose").onclick=()=>byId<HTMLDialogElement>("fileDetail").close();
 const full=byId("fullMap");
-function setFull(on:boolean){document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));requestFrame()}
+function setFull(on:boolean){document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));syncChatIcons();requestFrame()}
 full.onclick=async()=>{
  const on=!document.body.classList.contains("full-map");setFull(on);
  if(on&&!document.fullscreenElement&&document.documentElement.requestFullscreen){try{await document.documentElement.requestFullscreen()}catch{/* map-only fallback */}}

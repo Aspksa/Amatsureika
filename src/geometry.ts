@@ -189,8 +189,8 @@ export function workspaceSectors(mode:Mode,memoryEdge:number,fileCount:number,wo
  const edge=[...files,...workPoints].reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+14),memoryEdge);
  return{files,work:workPoints,edge};
 }
-/** Four real modules, with work and documents facing their data sectors. */
+/** Five real modules, with chat, work and documents facing their data sectors. */
 export function dataOrbit(radius:number):Point[]{
  const r=Math.max(300,radius+22);
- return [-65,180,30,-17].map(deg=>polar(r,deg*Math.PI/180));
+ return [-65,180,30,-17,-90].map(deg=>polar(r,deg*Math.PI/180));
 }
