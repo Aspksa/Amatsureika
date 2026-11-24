@@ -4,6 +4,7 @@ import sqlite3
 from urllib.parse import urlsplit, parse_qs, quote
 from workspace import Workspace, LIMIT
 from routing import Router, calculate
+from report_export import export_report
 from tool_engine import catalog
 import shutil
 from chat_store import ChatStore
@@ -95,7 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -121,6 +122,16 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute","/api/agent/run","/api/agent/save") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
+            if path == "/api/agent/export":
+                data,filename,mime=export_report(self.router.tools,value)
+                self.send_response(200)
+                self.send_header("Content-Type",mime)
+                self.send_header("Content-Disposition",'attachment; filename="'+filename+'"')
+                self.send_header("Content-Length",str(len(data)))
+                self.send_header("Cache-Control","no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if path == "/api/agent/state":
                 if value!={}:raise ValueError("Некорректный запрос")
                 return self.send_json(self.router.agent.state())

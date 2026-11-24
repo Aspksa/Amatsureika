@@ -251,3 +251,10 @@ body.full-map #panel{display:none!important}
 #agentJobs{display:flex;gap:6px;flex-wrap:wrap}
 #attachList,#agentTools{width:100%;min-height:110px}
 #reportOutput tr[hidden]{display:none}
+
+.message-content h3,.message-content h4{color:#c4dedf;margin:10px 0 4px}
+#messages .message-content p{margin:0 0 6px}
+.message-content ul,.message-content ol{padding-left:20px;margin:5px 0}
+.message-content pre{white-space:pre-wrap;background:#122632;padding:10px;border-radius:7px;overflow:auto}
+.message-content code{font-family:Consolas,monospace;color:#bce9df}
+.chat-table-scroll{overflow:auto}.chat-table-scroll table{border-collapse:collapse;font-size:12px}.chat-table-scroll td,.chat-table-scroll th{border-bottom:1px solid #29434f;padding:5px;white-space:nowrap}

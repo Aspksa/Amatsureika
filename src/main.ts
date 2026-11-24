@@ -318,10 +318,37 @@ function syncMap(next:ChatCluster[]){
  refreshStats();if(oldLength!==clusters.length)decorate();
  if(oldLength!==clusters.length&&Math.abs(zoom-oldFit)<.03){zoom=fitZoom();tx=0;ty=fitOffset()}requestFrame();
 }
+function renderMarkdown(root:HTMLElement,text:string){
+ const lines=text.split("\n");let code:string[]|null=null,list:HTMLUListElement|HTMLOListElement|null=null;
+ function inline(parent:HTMLElement,value:string){
+  for(const token of value.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/g)){
+   if(token.startsWith("**")&&token.endsWith("**")&&token.length>4){const e=document.createElement("strong");e.textContent=token.slice(2,-2);parent.append(e)}
+   else if(token.startsWith("`")&&token.endsWith("`")&&token.length>2){const e=document.createElement("code");e.textContent=token.slice(1,-1);parent.append(e)}
+   else parent.append(document.createTextNode(token))
+  }
+ }
+ function flushCode(){if(code!==null){const pre=document.createElement("pre"),el=document.createElement("code");el.textContent=code.join("\n");pre.append(el);root.append(pre);code=null}}
+ for(let i=0;i<lines.length;i++){
+  const line=lines[i];if(/^\s*```/.test(line)){if(code!==null)flushCode();else code=[];list=null;continue}
+  if(code!==null){code.push(line);continue}
+  if(!line.trim()){list=null;continue}
+  if(i+1<lines.length&&line.includes("|")&&/^\s*\|?\s*:?-{3,}/.test(lines[i+1])&&lines[i+1].includes("|")){
+   const cells=(v:string)=>v.trim().replace(/^\||\|$/g,"").split("|").map(x=>x.trim());
+   const headers=cells(line),wrap=document.createElement("div"),table=document.createElement("table"),head=document.createElement("thead"),tr=document.createElement("tr"),body=document.createElement("tbody");wrap.className="chat-table-scroll";
+   for(const h of headers){const th=document.createElement("th");inline(th,h);tr.append(th)}head.append(tr);table.append(head);i++;
+   while(i+1<lines.length&&lines[i+1].includes("|")&&cells(lines[i+1]).length===headers.length){i++;const row=document.createElement("tr");for(const cell of cells(lines[i])){const td=document.createElement("td");inline(td,cell);row.append(td)}body.append(row)}
+   table.append(body);wrap.append(table);root.append(wrap);list=null;continue
+  }
+  const heading=line.match(/^(#{1,6})\s+(.+)$/),bullet=line.match(/^\s*([-*]|\d+\.)\s+(.+)$/);
+  if(heading){list=null;const h=document.createElement(heading[1].length<=2?"h3":"h4");inline(h,heading[2]);root.append(h)}
+  else if(bullet){const tag=/\d/.test(bullet[1])?"ol":"ul";if(!list||list.tagName.toLowerCase()!==tag){list=document.createElement(tag);root.append(list)}const li=document.createElement("li");inline(li,bullet[2]);list.append(li)}
+  else{list=null;const p=document.createElement("p");inline(p,line);root.append(p)}
+ }flushCode()
+}
 function appendMessage(m:ChatMessage){
  if(messages.querySelector('[data-message="'+m.id+'"]'))return;
  const article=document.createElement("article");article.className="chat-message "+(m.role==="user"?"user-message":"reply");article.dataset.message=String(m.id);article.dataset.role=m.role;
- const p=document.createElement("p");p.textContent=m.text;article.append(p);
+ article.dataset.raw=m.text;const content=document.createElement("div");content.className="message-content";if(m.role==="assistant")renderMarkdown(content,m.text);else{const p=document.createElement("p");p.textContent=m.text;content.append(p)}article.append(content);
  const actions=document.createElement("div");actions.className="message-actions";
  const copy=document.createElement("button");copy.type="button";copy.textContent="Копировать";copy.onclick=()=>void copyText(m.text);actions.append(copy);
  if(m.role==="user"){const reuse=document.createElement("button");reuse.type="button";reuse.textContent="Повторить";reuse.onclick=()=>{if(busy)return;if(selected>=0)select(selected);chatPrompt.value=m.text.slice(0,1000);resizePrompt();chatPrompt.focus()};actions.append(reuse)}
@@ -577,7 +604,7 @@ chatPrompt.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.is
 async function copyText(text:string){
  try{await navigator.clipboard.writeText(text);chatStatus.textContent="Скопировано"}catch{chatStatus.textContent="Копирование недоступно. Выделите текст вручную."}
 }
-function displayedText(){return Array.from(messages.querySelectorAll<HTMLElement>(".chat-message")).map(m=>(m.dataset.role==="user"?"Вы":"Amatsureika")+": "+(m.querySelector("p")?.textContent??"")).join("\n\n")}
+function displayedText(){return Array.from(messages.querySelectorAll<HTMLElement>(".chat-message")).map(m=>(m.dataset.role==="user"?"Вы":"Amatsureika")+": "+(m.dataset.raw??"")).join("\n\n")}
 byId("toolCopy").onclick=()=>{closeTools();void copyText(displayedText())};
 byId("toolExport").onclick=()=>{closeTools();const blob=new Blob([displayedText()],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="Amatsureika-"+(selected>=0?"block-"+clusters[selected].id:"dialog")+".txt";a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)};
 byId("toolLatest").onclick=()=>{closeTools();if(!busy){if(selected>=0)select(selected);else messages.scrollTop=messages.scrollHeight}};
@@ -703,7 +730,7 @@ type LocalReport={tool:string;title:string;month:string;columns:string[];rows:st
 const reportsDialog=byId<HTMLDialogElement>("reportsDialog"),reportSelect=byId<HTMLSelectElement>("reportSelect"),reportMonth=byId<HTMLInputElement>("reportMonth"),reportOutput=byId("reportOutput");
 let reportTools:ReportTool[]=[],lastReport:LocalReport|null=null,reportRevision=0;
 function syncReportMonth(){const monthly=!!reportTools.find(t=>t.id===reportSelect.value)?.monthly;reportMonth.disabled=!monthly;reportMonth.required=monthly;byId("reportMonthLabel").hidden=!monthly}
-function resetReport(){lastReport=null;reportOutput.replaceChildren();byId<HTMLButtonElement>("reportDownload").disabled=true;byId<HTMLButtonElement>("reportCopy").disabled=true}
+function resetReport(){lastReport=null;reportOutput.replaceChildren();byId<HTMLButtonElement>("reportDownload").disabled=true;byId<HTMLButtonElement>("reportCopy").disabled=true;byId<HTMLButtonElement>("reportXlsx").disabled=true;byId<HTMLButtonElement>("reportDocx").disabled=true}
 reportSelect.onchange=()=>{reportRevision++;resetReport();syncReportMonth()};
 reportMonth.onchange=()=>{reportRevision++;resetReport()};
 byId("toolReports").onclick=async()=>{
@@ -727,11 +754,20 @@ byId<HTMLFormElement>("reportsForm").onsubmit=async e=>{
   let ascending=true;Array.from(header.children).forEach((th,i)=>{const b=document.createElement("button");b.type="button";b.textContent=th.textContent??"";th.replaceChildren(b);b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((a,b)=>{const x=a.cells[i].textContent??"",y=b.cells[i].textContent??"",nx=Number(x),ny=Number(y);return (x.trim()&&y.trim()&&Number.isFinite(nx)&&Number.isFinite(ny)?nx-ny:x.localeCompare(y,"ru",{numeric:true}))*(ascending?1:-1)});ascending=!ascending;body.append(...rows)}});
   const filter=document.createElement("input");filter.placeholder="Фильтр строк таблицы";filter.setAttribute("aria-label","Фильтр строк отчёта");filter.oninput=()=>{for(const row of Array.from(body.rows))row.hidden=!(row.textContent??"").toLocaleLowerCase("ru").includes(filter.value.toLocaleLowerCase("ru"))};reportOutput.insertBefore(filter,scroll);
   const note=document.createElement("small");note.textContent=result.total_rows===0?"Нет записей":("Строк: "+result.rows.length+" из "+result.total_rows+" · "+new Date(result.generated).toLocaleString("ru"));reportOutput.append(note);
-  byId<HTMLButtonElement>("reportDownload").disabled=false;byId<HTMLButtonElement>("reportCopy").disabled=false;
+  byId<HTMLButtonElement>("reportDownload").disabled=false;byId<HTMLButtonElement>("reportCopy").disabled=false;byId<HTMLButtonElement>("reportXlsx").disabled=false;byId<HTMLButtonElement>("reportDocx").disabled=false;
  }catch(e){if(rev===reportRevision)reportOutput.textContent=e instanceof Error?e.message:"Ошибка отчёта"}
 };
 byId("reportCopy").onclick=()=>{if(lastReport)void copyText([lastReport.title,...lastReport.summary,lastReport.columns.join(" | "),...lastReport.rows.map(r=>r.join(" | ")),"Строк: "+lastReport.rows.length+" из "+lastReport.total_rows].join("\n"))};
 function csvCell(s:string){const safe=/^[\s]*[=+\-@]/.test(s)&&!/^[-+]?[0-9]+(?:\.[0-9]+)?$/.test(s)?"'"+s:s;return '"'+safe.replace(/"/g,'""')+'"'}
+async function downloadOffice(format:"xlsx"|"docx"){
+ if(!lastReport)return;const report=lastReport;
+ try{
+  const response=await fetch("/api/agent/export",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tool:report.tool,month:report.month,format})});
+  if(!response.ok){const error=await response.json();throw Error(error.error||"Ошибка экспорта")}
+  const url=URL.createObjectURL(await response.blob()),a=document.createElement("a");a.href=url;a.download=report.tool+(report.month?"-"+report.month:"")+"."+format;a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка экспорта"}
+}
+byId("reportXlsx").onclick=()=>void downloadOffice("xlsx");byId("reportDocx").onclick=()=>void downloadOffice("docx");
 byId("reportDownload").onclick=()=>{
  if(!lastReport)return;const csv=[lastReport.columns,...lastReport.rows].map(r=>r.map(csvCell).join(";")).join("\r\n");const url=URL.createObjectURL(new Blob(["\uFEFF",csv],{type:"text/csv;charset=utf-8"}));const a=document.createElement("a");a.href=url;a.download=lastReport.tool+(lastReport.month?"-"+lastReport.month:"")+".csv";a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)
 };
