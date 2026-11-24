@@ -96,7 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction", "/api/routing/preview", "/api/routing/plan-stream", "/api/routing/export-result"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -119,10 +119,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "Expected JSON"}, 415)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute","/api/agent/run","/api/agent/save","/api/routing/stream","/api/agent/cognitive") else 4096):
+            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute","/api/agent/run","/api/agent/save","/api/routing/stream","/api/agent/cognitive","/api/routing/plan-stream") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
-            if path == "/api/routing/stream":
+            if path in ("/api/routing/stream","/api/routing/plan-stream"):
                 # HTTP close-delimited NDJSON, each line flushed immediately.
                 self.send_response(200)
                 self.send_header("Content-Type","application/x-ndjson; charset=utf-8")
@@ -134,7 +134,10 @@ class Handler(SimpleHTTPRequestHandler):
                     self.wfile.write((json.dumps(value,ensure_ascii=False)+"\n").encode("utf-8"))
                     self.wfile.flush()
                 try:
-                    result=self.router.execute(value,emit=lambda part:event({"type":"delta","text":part}))
+                    if path=="/api/routing/plan-stream":
+                        if not isinstance(value,dict) or set(value)!={"text","request_id","steps"}:raise ValueError("Некорректный план")
+                        result=self.router.plan({"text":value["text"],"request_id":value["request_id"]},progress=lambda p:event({"type":"progress","step":p}),approved_steps=value["steps"])
+                    else:result=self.router.execute(value,emit=lambda part:event({"type":"delta","text":part}))
                     event({"type":"done","result":result})
                 except (BrokenPipeError,ConnectionResetError):pass
                 except (ValueError,TypeError,CloudError,RuntimeError,sqlite3.Error,OSError) as exc:
@@ -187,6 +190,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(self.router.search_tool(value))
             if path == "/api/routing/calculate":
                 return self.send_json(calculate(value))
+            if path == "/api/routing/preview":
+                return self.send_json(self.router.preview(value))
+            if path == "/api/routing/export-result":
+                return self.send_json(self.router.export_result(value))
             if path == "/api/routing/correction":
                 return self.send_json(self.router.correction(value))
             if path == "/api/routing/web":
@@ -228,7 +235,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (sqlite3.Error, RuntimeError, OSError):
             self.send_json({"error": "Local memory unavailable"}, 503)
         except (ValueError, TypeError, OverflowError) as exc:
-            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute","/api/routing/search","/api/routing/calculate","/api/routing/tools","/api/routing/report","/api/routing/web","/api/routing/correction") or path.startswith("/api/agent/") else "Invalid settings"}, 400)
+            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute","/api/routing/search","/api/routing/calculate","/api/routing/tools","/api/routing/report","/api/routing/web","/api/routing/correction","/api/routing/preview","/api/routing/export-result") or path.startswith("/api/agent/") else "Invalid settings"}, 400)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

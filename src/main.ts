@@ -19,7 +19,7 @@ const key=(i:number,n:number,outer:boolean)=>i+":"+n+":"+outer;
 const counts:number[]=[];
 type ChatCluster={id:number;previous_id:number|null;count:number};
 type ResultSource={source:"memory"|"work"|"file";id:number;title:string};
-type ResultMeta={style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
+type ResultMeta={links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
 type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string;metadata?:ResultMeta};
 type Snapshot={clusters:ChatCluster[];messages:ChatMessage[];duplicate?:boolean};
 let clusters:ChatCluster[]=[];
@@ -299,6 +299,7 @@ function syncChatIcons(){
  chatToggle.setAttribute("aria-expanded",String(open));group("chatIcon").setAttribute("aria-expanded",String(open));group("chatIcon").classList.toggle("chat-open",open);
 }
 function toggleChat(){
+ if(document.body.classList.contains("full-chat")){setChatFull(false);return}
  if(document.body.classList.contains("full-map")){
   setFull(false);if(document.fullscreenElement)void document.exitFullscreen().catch(()=>{});
   chat.hidden=false;
@@ -321,7 +322,7 @@ function syncMap(next:ChatCluster[]){
  if(oldLength!==clusters.length&&Math.abs(zoom-oldFit)<.03){zoom=fitZoom();tx=0;ty=fitOffset()}requestFrame();
 }
 function renderMarkdown(root:HTMLElement,text:string){
- const lines=text.split("\n");let code:string[]|null=null,list:HTMLUListElement|HTMLOListElement|null=null;
+ const lines=text.split("\n");let language="",code:string[]|null=null,list:HTMLUListElement|HTMLOListElement|null=null;
  function inline(parent:HTMLElement,value:string){
   for(const token of value.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/g)){
    if(token.startsWith("**")&&token.endsWith("**")&&token.length>4){const e=document.createElement("strong");e.textContent=token.slice(2,-2);parent.append(e)}
@@ -329,9 +330,9 @@ function renderMarkdown(root:HTMLElement,text:string){
    else parent.append(document.createTextNode(token))
   }
  }
- function flushCode(){if(code!==null){const pre=document.createElement("pre"),el=document.createElement("code");el.textContent=code.join("\n");pre.append(el);root.append(pre);code=null}}
+ function flushCode(){if(code!==null){const block=document.createElement("div"),bar=document.createElement("div"),pre=document.createElement("pre"),el=document.createElement("code"),copy=document.createElement("button"),label=document.createElement("span");const value=code.join("\n");block.className="code-block";bar.className="code-bar";label.textContent=language||"Код";copy.type="button";copy.textContent="Копировать";copy.onclick=()=>void copyText(value);bar.append(label,copy);el.textContent=value;pre.append(el);block.append(bar,pre);root.append(block);code=null;language=""}}
  for(let i=0;i<lines.length;i++){
-  const line=lines[i];if(/^\s*```/.test(line)){if(code!==null)flushCode();else code=[];list=null;continue}
+  const line=lines[i];if(/^\s*```/.test(line)){if(code!==null)flushCode();else{code=[];language=line.trim().slice(3).trim().slice(0,30)}list=null;continue}
   if(code!==null){code.push(line);continue}
   if(!line.trim()){list=null;continue}
   if(i+1<lines.length&&line.includes("|")&&/^\s*\|?\s*:?-{3,}/.test(lines[i+1])&&lines[i+1].includes("|")){
@@ -353,21 +354,22 @@ function sourceAction(h:ResultSource){
  else if(h.source==="work"){const r=workspaceMap.records.find(x=>x.id===h.id);if(r)void workspaceUI.openRecord(r.kind,r.id);else chatStatus.textContent="Запись недоступна или архивирована"}
  else{const f=workspaceMap.files.find(x=>x.id===h.id);if(f){byId<HTMLAnchorElement>("fileDownload").href="/api/disk/download?id="+f.id;byId("fileDetailName").textContent=f.name;byId("fileDetailSize").textContent=(f.size/1024).toLocaleString("ru",{maximumFractionDigits:1})+" КБ";byId<HTMLDialogElement>("fileDetail").showModal()}else chatStatus.textContent="Файл недоступен"}
 }
-function resultCard(meta:ResultMeta){
+function resultCard(meta:ResultMeta,messageId:number){
  const root=document.createElement("details");root.className="chat-result";const summary=document.createElement("summary");summary.textContent="Источники и инструменты"+(meta.tools?.length?" · "+meta.tools.join(", "):"");root.append(summary);
  if(meta.steps?.length){const p=document.createElement("p");p.textContent=meta.steps.map(s=>s.tool+" · "+s.status).join(" / ");root.append(p)}
  for(const h of meta.sources??[]){const b=document.createElement("button");b.type="button";b.textContent=h.title+" · #"+h.id;b.onclick=()=>sourceAction(h);root.append(b)}
  for(const h of meta.web_sources??[]){const div=document.createElement("div"),a=document.createElement("a");try{if(new URL(h.url).protocol!=="https:")continue}catch{continue}a.href=h.url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=h.title;div.append(a);const p=document.createElement("p");p.textContent=(h.date||"Дата не указана")+" · непроверенная выдержка: "+h.excerpt;div.append(p);root.append(div)}
  if(meta.warnings?.length){const p=document.createElement("p");p.textContent=meta.warnings.join(" ");p.className="result-warning";root.append(p)}
- if(meta.table){const t=meta.table,wrap=document.createElement("div"),table=document.createElement("table"),head=document.createElement("tr"),body=document.createElement("tbody");wrap.className="chat-table-scroll";for(let i=0;i<t.columns.length;i++){const th=document.createElement("th"),b=document.createElement("button");b.type="button";b.textContent=t.columns[i];let asc=true;b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((x,y)=>(x.cells[i].textContent??"").localeCompare(y.cells[i].textContent??"","ru",{numeric:true})*(asc?1:-1));asc=!asc;body.append(...rows)};th.append(b);head.append(th)}table.append(head);for(const row of t.rows){const tr=document.createElement("tr");for(const v of row){const td=document.createElement("td");td.textContent=v;tr.append(td)}body.append(tr)}table.append(body);wrap.append(table);root.append(wrap);const p=document.createElement("p");p.textContent="Показано "+t.rows.length+" из "+t.total_rows;root.append(p)}
+ if(meta.links?.length){const p=document.createElement("p");p.textContent="Связи по общим словам (не причинность): "+meta.links.map(l=>l.from+" ↔ "+l.to+" · "+l.terms.join(", ")).join("; ");root.append(p)}
+ if(meta.table){const t=meta.table,wrap=document.createElement("div"),table=document.createElement("table"),head=document.createElement("tr"),body=document.createElement("tbody");wrap.className="chat-table-scroll";for(let i=0;i<t.columns.length;i++){const th=document.createElement("th"),b=document.createElement("button");b.type="button";b.textContent=t.columns[i];let asc=true;b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((x,y)=>(x.cells[i].textContent??"").localeCompare(y.cells[i].textContent??"","ru",{numeric:true})*(asc?1:-1));asc=!asc;body.append(...rows)};th.append(b);head.append(th)}table.append(head);for(const row of t.rows){const tr=document.createElement("tr");for(const v of row){const td=document.createElement("td");td.textContent=v;tr.append(td)}body.append(tr)}table.append(body);wrap.append(table);root.append(wrap);const p=document.createElement("p");p.textContent="Показано "+t.rows.length+" из "+t.total_rows;root.append(p);for(const format of ["xlsx","docx"]){const b=document.createElement("button");b.type="button";b.textContent="Сохранить "+format.toUpperCase();b.onclick=async()=>{if(busy||!confirm("Сохранить именно эту таблицу на Диск?"))return;b.disabled=true;try{const out=await routingPost<{name:string}>("export-result",{message:messageId,format,confirm:true});chatStatus.textContent="Сохранено: "+out.name;await refreshWorkspaceMap(true)}catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка"}finally{b.disabled=false}};root.append(b)}}
  if(meta.series?.length){const chart=document.createElement("div");chart.className="chat-series";root.append(chart);drawSeries(meta.series,chart);root.open=true}
  return root;
 }
-function appendMessage(m:ChatMessage){
- if(messages.querySelector('[data-message="'+m.id+'"]'))return;
+function renderMessage(m:ChatMessage){
+
  const article=document.createElement("article");article.className="chat-message "+(m.role==="user"?"user-message":"reply");article.dataset.message=String(m.id);article.dataset.role=m.role;
- article.dataset.raw=m.text;const content=document.createElement("div");content.className="message-content";if(m.role==="assistant")renderMarkdown(content,m.text);else{const p=document.createElement("p");p.textContent=m.text;content.append(p)}article.append(content);
- if(m.role==="assistant"&&m.metadata&&(m.metadata.tools?.length||m.metadata.sources?.length||m.metadata.web_sources?.length||m.metadata.warnings?.length))article.append(resultCard(m.metadata));
+ article.dataset.raw=m.text;const content=document.createElement("div");content.className="message-content";if(m.role==="assistant")renderMarkdown(content,m.text);else{const p=document.createElement("p");p.textContent=m.text;content.append(p)}if(m.role==="assistant"&&m.text.length>2200){const folded=document.createElement("details");folded.className="long-answer";const summary=document.createElement("summary");summary.textContent="Развернуть полный ответ · "+m.text.length.toLocaleString("ru")+" символов";const preview=document.createElement("p");preview.className="answer-preview";preview.textContent=m.text.slice(0,420)+"…";folded.append(summary,content);folded.ontoggle=()=>{preview.hidden=folded.open};article.append(preview,folded)}else article.append(content);
+ if(m.role==="assistant"&&m.metadata&&(m.metadata.tools?.length||m.metadata.sources?.length||m.metadata.web_sources?.length||m.metadata.warnings?.length))article.append(resultCard(m.metadata,m.id));
  const actions=document.createElement("div");actions.className="message-actions";
  const copy=document.createElement("button");copy.type="button";copy.textContent="Копировать";copy.onclick=()=>void copyText(m.text);actions.append(copy);
  if(m.role==="user"){const reuse=document.createElement("button");reuse.type="button";reuse.textContent="Повторить";reuse.onclick=()=>{if(busy)return;if(selected>=0)select(selected);chatPrompt.value=m.text.slice(0,1000);resizePrompt();chatPrompt.focus()};actions.append(reuse)}
@@ -376,14 +378,29 @@ function appendMessage(m:ChatMessage){
   const correct=document.createElement("button");correct.type="button";correct.textContent="Исправить";correct.onclick=()=>{if(busy)return;const d=byId<HTMLDialogElement>("correctionDialog");byId<HTMLInputElement>("correctionId").value=String(m.id);byId<HTMLTextAreaElement>("correctionText").value="";d.showModal()};actions.append(correct);
  }
  const locate=document.createElement("button");locate.type="button";locate.textContent="На карте";locate.onclick=()=>{if(busy)return;const i=clusters.findIndex(c=>c.id===m.cluster_id);if(i>=0)focusCluster(i)};actions.append(locate);
- article.append(actions);messages.append(article);while(messages.children.length>500)messages.firstElementChild?.remove();messages.scrollTop=messages.scrollHeight;
+ article.append(actions);return article;
 }
+const chatRecords=new Map<number,ChatMessage>();let chatWindowStart=0;
+const CHAT_WINDOW=60,CHAT_PAGE=30;
+function redrawChat(scrollBottom=true){
+ const all=Array.from(chatRecords.values()).sort((a,b)=>a.id-b.id);
+ chatWindowStart=Math.max(0,Math.min(chatWindowStart,Math.max(0,all.length-CHAT_WINDOW)));
+ const old=messages.scrollHeight-messages.scrollTop;
+ messages.replaceChildren();
+ if(chatWindowStart>0){const older=document.createElement("button");older.className="history-page";older.textContent="↑ Предыдущие "+Math.min(CHAT_PAGE,chatWindowStart)+" сообщений";older.onclick=()=>{if(busy)return;chatWindowStart=Math.max(0,chatWindowStart-CHAT_PAGE);redrawChat(false);messages.scrollTop=0};messages.append(older)}
+ for(const m of all.slice(chatWindowStart,chatWindowStart+CHAT_WINDOW))messages.append(renderMessage(m));
+ if(chatWindowStart+CHAT_WINDOW<all.length){const newer=document.createElement("button");newer.className="history-page";newer.textContent="↓ Следующие сообщения";newer.onclick=()=>{if(busy)return;chatWindowStart=Math.min(Math.max(0,all.length-CHAT_WINDOW),chatWindowStart+CHAT_PAGE);redrawChat(false);messages.scrollTop=0};messages.append(newer)}
+ if(scrollBottom)messages.scrollTop=messages.scrollHeight;else messages.scrollTop=Math.max(0,messages.scrollHeight-old);
+}
+function resetChat(records:ChatMessage[]){chatRecords.clear();for(const m of records)chatRecords.set(m.id,m);chatWindowStart=Math.max(0,chatRecords.size-CHAT_WINDOW);redrawChat()}
+function appendMessage(m:ChatMessage){if(chatRecords.has(m.id))return;chatRecords.set(m.id,m);while(chatRecords.size>500){const first=chatRecords.keys().next().value;if(first===undefined)break;chatRecords.delete(first)}chatWindowStart=Math.max(0,chatRecords.size-CHAT_WINDOW);redrawChat()}
+function latestChat(){chatWindowStart=Math.max(0,chatRecords.size-CHAT_WINDOW);redrawChat()}
 async function snapshot(cluster?:number):Promise<Snapshot>{const r=await fetch("/api/memory"+(cluster===undefined?"":"?cluster="+cluster),{cache:"no-store"});if(!r.ok)throw Error("history");return r.json()}
 async function openHistory(i:number){
  const revision=++historyRevision;chat.hidden=false;syncChatIcons();
  historyTitle.textContent=i<0?"ТЕКУЩИЙ ДИАЛОГ":"АРХИВ · БЛОК "+clusters[i].id+" · "+counts[i]+"/500";
  liveButton.hidden=i<0;sendButton.disabled=i>=0||busy||!ready;chatPrompt.disabled=i>=0||!ready;
- try{const s=await snapshot(i<0?undefined:clusters[i].id);if(revision!==historyRevision)return;messages.replaceChildren();s.messages.forEach(appendMessage);syncMap(s.clusters);chatStatus.textContent=i<0?"Локальная память · Cloud.ru по запросу":"Архив · для отправки вернитесь в диалог"}
+ try{const s=await snapshot(i<0?undefined:clusters[i].id);if(revision!==historyRevision)return;resetChat(s.messages);syncMap(s.clusters);chatStatus.textContent=i<0?"Локальная память · Cloud.ru по запросу":"Архив · для отправки вернитесь в диалог"}
  catch{if(revision===historyRevision)chatStatus.textContent="Не удалось загрузить переписку."}
 }
 liveButton.onclick=()=>{if(selected>=0)select(selected);else void openHistory(-1)};
@@ -415,11 +432,11 @@ function clearFlow(){
  arrivalTimers.clear();pendingClusters.clear();renderKey="";
 }
 function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"|"work"|"docs"):Promise<void>{
- if(motionOff()||document.hidden||flowLegs.size>=12)return Promise.resolve();
+ if(motionOff()||document.hidden||flowLegs.size>=Math.max(3,Math.floor(12*quality)))return Promise.resolve();
  return new Promise(resolve=>{
   const layer=byId("traffic"),cls="quiet-"+kind;
   const line=el("line",{class:"quiet-route "+cls},layer);
-  const dots=Array.from({length:PARTICLES},(_,i)=>el("circle",{r:particleAt(0,i,speed).radius,class:"quiet-particle "+cls,opacity:0},layer));
+  const dots=Array.from({length:Math.max(1,Math.round(PARTICLES*quality))},(_,i)=>el("circle",{r:particleAt(0,i,speed).radius,class:"quiet-particle "+cls,opacity:0},layer));
   flowLegs.add({from,to,begin:performance.now(),speed,dots,line,resolve});requestFrame();
  });
 }
@@ -461,8 +478,8 @@ async function routingPost<T>(path:string,body:object):Promise<T>{
  const r=await fetch("/api/routing/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
  const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка поиска");return data as T;
 }
-let streamingPreview:HTMLDivElement|null=null;
-function clearStreamPreview(){streamingPreview?.remove();streamingPreview=null}
+let streamingPreview:HTMLDivElement|null=null,streamFrame=0;
+function clearStreamPreview(){if(streamFrame)cancelAnimationFrame(streamFrame);streamFrame=0;streamingPreview?.remove();streamingPreview=null}
 async function streamRequest(body:object):Promise<Snapshot>{
  const r=await fetch("/api/routing/stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
  if(!r.ok||!r.body)throw Error("Поток недоступен");
@@ -477,7 +494,7 @@ async function streamRequest(body:object):Promise<Snapshot>{
     if(event.type==="delta"&&typeof event.text==="string"){
      answer+=event.text;if(answer.length>100000)throw Error("Слишком большой ответ");
      if(selected<0){if(!streamingPreview){streamingPreview=document.createElement("div");streamingPreview.className="stream-preview";messages.append(streamingPreview)}
-      streamingPreview.textContent=answer;messages.scrollTop=messages.scrollHeight;}
+      if(!streamFrame)streamFrame=requestAnimationFrame(()=>{streamFrame=0;if(streamingPreview){streamingPreview.textContent=answer;messages.scrollTop=messages.scrollHeight}});}
     }else if(event.type==="done")done=event.result as Snapshot;
    }
    if(chunk.done)break;
@@ -500,7 +517,29 @@ async function retrieveAnimation(hits:SearchHit[]){
   await playLeg(target,corePoint,kind);arrival(group("core"),"reply");
  }));
 }
-function chatPhase(phase:string){group("chatIcon").dataset.phase=phase;chat.dataset.phase=phase}
+function chatPhase(phase:string){group("chatIcon").dataset.phase=phase;chat.dataset.phase=phase;if(phase==="search")arrival(group("chatIcon"),"request")}
+type PreviewStep={id:string;tool:string;month:string;depends:string[]};
+async function previewChatPlan(request:{text:string;request_id:string}){
+ const preview=await routingPost<{steps:PreviewStep[];note:string}>("preview",request);
+ if(!preview.steps.length)return preview.steps;
+ const dialog=byId<HTMLDialogElement>("chatPlanDialog"),output=byId("chatPlanSteps");
+ output.textContent=preview.steps.map((s,i)=>(i+1)+". "+s.tool+(s.month?" · "+s.month:"")+(s.depends.length?" · после "+s.depends.join(", "):" · независимый шаг")).join("\n");
+ const ok=await new Promise<boolean>(resolve=>{dialog.returnValue="cancel";dialog.addEventListener("close",()=>resolve(dialog.returnValue==="run"),{once:true});dialog.showModal()});
+ if(!ok){cancelPreparation=true;throw Error("План отменён")}return preview.steps
+}
+async function runChatPlan(request:{text:string;request_id:string},steps:PreviewStep[]):Promise<RoutePlan>{
+ if(!steps.length)return routingPost<RoutePlan>("plan",request);
+ const response=await fetch("/api/routing/plan-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...request,steps})});
+ if(!response.ok||!response.body)throw Error("Нет потока плана");
+ const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="",result:RoutePlan|undefined;
+ const statuses=new Map<string,string>();
+ try{while(true){const chunk=await reader.read();buffer+=decoder.decode(chunk.value,{stream:!chunk.done});const lines=buffer.split("\n");buffer=lines.pop()??"";if(buffer.length>4*1024*1024)throw Error("Слишком большой результат");
+ for(const line of lines){if(!line.trim())continue;const event=JSON.parse(line);
+ if(event.type==="error")throw Error(event.error);
+ if(event.type==="done")result=event.result as RoutePlan;
+ if(event.type==="progress"){const p=event.step;statuses.set(p.id,p.tool+" · "+p.status);byId("chatProgress").textContent=[...statuses.values()].join(" | ");chatPhase("tool");if(p.status!=="scheduled"){arrival(group("core"),p.status==="ok"?"reply":"error")}}
+ }if(chunk.done)break}if(!result)throw Error("План прерван");return result}finally{await reader.cancel().catch(()=>{})}
+}
 function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
  const dialog=byId<HTMLDialogElement>("routingConsent");
  byId("routingQuestion").textContent=text;
@@ -529,7 +568,7 @@ form.onsubmit=async e=>{
    leg:routeLeg,
    prepare:async requested=>{
     checkPreparation();chatStatus.textContent="Поиск: переписка, работа, документы…";
-    plan=await routingPost<RoutePlan>("plan",{text:request.text,request_id:request.request_id});
+    const steps=await previewChatPlan(request);checkPreparation();plan=await runChatPlan(request,steps);
     await refreshWorkspaceMap();
     chatStatus.textContent="Найдено источников: "+plan.hits.length+(plan.fts?" · FTS5":" · ограниченный поиск");
     checkPreparation();await retrieveAnimation(plan.hits);checkPreparation();
@@ -565,12 +604,12 @@ form.onsubmit=async e=>{
   });
   if(editApproved)void refreshWorkspaceMap();
   chatStatus.textContent=(approved?"Cloud.ru":"Локальный ответ")+" · сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
- }catch(error){clearFlow();if(cancelPreparation){chatStatus.textContent="Подготовка отменена. Запрос не отправлен.";return}arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":(error instanceof Error?error.message:"Операция не завершена")+". Проверьте результат перед повтором.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";resizePrompt();messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
- finally{chatPhase("idle");busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
+ }catch(error){clearFlow();if(cancelPreparation){chatStatus.textContent="Подготовка отменена. Запрос не отправлен.";return}arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":(error instanceof Error?error.message:"Операция не завершена")+". Проверьте результат перед повтором.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";resizePrompt();resetChat(recovered.messages);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
+ finally{byId("chatProgress").textContent="";chatPhase("idle");busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
  sendButton.disabled=true;chatPrompt.disabled=true;
- try{const s=await snapshot();syncMap(s.clusters);messages.replaceChildren();s.messages.forEach(appendMessage);ready=true;chatStatus.textContent="Локальная память · Cloud.ru по запросу";await loadCamera()}
+ try{const s=await snapshot();syncMap(s.clusters);resetChat(s.messages);ready=true;chatStatus.textContent="Локальная память · Cloud.ru по запросу";await loadCamera()}
  catch{chatStatus.textContent="Не удалось загрузить локальную память. Обновите страницу."}
  finally{sendButton.disabled=!ready;chatPrompt.disabled=!ready}
 }
@@ -655,17 +694,27 @@ function updateToolState(){
  for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport","toolWeb","toolKnowledge","toolCognitive"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
-byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
-function resizePrompt(){chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px"}
+byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent","chatPlanDialog"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
+const chatResize=byId("chatResize"),chatFull=byId<HTMLButtonElement>("chatFull");
+let chatWidth=0,chatDrag=false;
+function setChatWidth(width:number){chatWidth=Math.round(Math.max(260,Math.min(innerWidth*.65,width)));chat.style.setProperty("--chat-width",chatWidth+"px");chatResize.setAttribute("aria-valuenow",String(chatWidth));requestFrame()}
+chatResize.addEventListener("pointerdown",e=>{if(innerWidth<=720||document.body.classList.contains("full-chat"))return;chatDrag=true;chatResize.setPointerCapture(e.pointerId);e.preventDefault()});
+chatResize.addEventListener("pointermove",e=>{if(chatDrag)setChatWidth(innerWidth-e.clientX)});
+for(const event of ["pointerup","pointercancel","lostpointercapture"])chatResize.addEventListener(event,()=>{chatDrag=false});
+chatResize.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();setChatWidth((chatWidth||chat.clientWidth)+(e.key==="ArrowLeft"?24:-24))}});
+function setChatFull(on:boolean){document.body.classList.toggle("full-chat",on);chatFull.setAttribute("aria-pressed",String(on));chatFull.title=on?"Вернуть карту":"Развернуть чат";chatFull.setAttribute("aria-label",chatFull.title);requestFrame()}
+chatFull.onclick=()=>setChatFull(!document.body.classList.contains("full-chat"));
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.body.classList.contains("full-chat")&&!document.querySelector("dialog[open]"))setChatFull(false)});
+function resizePrompt(){chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px";const q=chatPrompt.value.toLowerCase(),h=byId("chatSuggestion");h.textContent=/сравн|excel|xlsx/.test(q)?"Таблицы: прикрепите файлы и укажите ключ: столбец":/новост|интернет|свеж/.test(q)?"Интернет: отдельное подтверждение":/статистик|график/.test(q)?"Статистика: 10 15 20":/отч[её]т|гсм|табел/.test(q)?"Отчёт: укажите месяц ГГГГ-ММ":""}
 chatPrompt.addEventListener("input",resizePrompt);
 chatPrompt.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!busy)form.requestSubmit(sendButton)}});
 async function copyText(text:string){
  try{await navigator.clipboard.writeText(text);chatStatus.textContent="Скопировано"}catch{chatStatus.textContent="Копирование недоступно. Выделите текст вручную."}
 }
-function displayedText(){return Array.from(messages.querySelectorAll<HTMLElement>(".chat-message")).map(m=>(m.dataset.role==="user"?"Вы":"Amatsureika")+": "+(m.dataset.raw??"")).join("\n\n")}
+function displayedText(){return Array.from(chatRecords.values()).sort((a,b)=>a.id-b.id).map(m=>(m.role==="user"?"Вы":"Amatsureika")+": "+m.text).join("\n\n")}
 byId("toolCopy").onclick=()=>{closeTools();void copyText(displayedText())};
 byId("toolExport").onclick=()=>{closeTools();const blob=new Blob([displayedText()],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="Amatsureika-"+(selected>=0?"block-"+clusters[selected].id:"dialog")+".txt";a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)};
-byId("toolLatest").onclick=()=>{closeTools();if(!busy){if(selected>=0)select(selected);else messages.scrollTop=messages.scrollHeight}};
+byId("toolLatest").onclick=()=>{closeTools();if(!busy){if(selected>=0)select(selected);else latestChat()}};
 byId("toolLocal").onclick=()=>{if(busy)return;localOnly=!localOnly;updateToolState();closeTools();chatStatus.textContent=localOnly?"Локальный режим":"Автоматический выбор маршрута"};
 function openModule(id:string){closeTools();group(id).dispatchEvent(new MouseEvent("click"))}
 byId("toolWork").onclick=()=>openModule("workIcon");byId("toolDocs").onclick=()=>openModule("docsIcon");byId("toolCloud").onclick=()=>openModule("cloudIcon");
@@ -905,12 +954,11 @@ byId("attachClose").onclick=()=>attachDialog.close();
 byId("attachInsert").onclick=()=>{attachDialog.close();attachIds(Array.from(attachList.selectedOptions).map(o=>Number(o.value)))};
 let attaching=false;
 async function uploadAttachments(files:File[]){
- if(busy||selected>=0||attaching)return;attaching=true;chatStatus.textContent="Загрузка в локальные документы…";sendButton.disabled=true;
+ if(busy||selected>=0||attaching)return;attaching=true;chatPhase("upload");chatStatus.textContent="Загрузка в локальные документы…";sendButton.disabled=true;
  try{const ids:number[]=[];for(const file of files.slice(0,3)){
-  const r=await fetch("/api/disk/upload?name="+encodeURIComponent(file.name),{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});
-  const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка загрузки");ids.push(data.id);
+  const data=await moduleRequest("docsIcon",async()=>{const r=await fetch("/api/disk/upload?name="+encodeURIComponent(file.name),{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка загрузки");return data as {id:number}});ids.push(data.id);
  }attachIds(ids);await refreshWorkspaceMap(true);chatStatus.textContent="Документы сохранены локально"}
- catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка загрузки"}finally{attaching=false;sendButton.disabled=busy||selected>=0||!ready}
+ catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка загрузки"}finally{chatPhase("idle");attaching=false;sendButton.disabled=busy||selected>=0||!ready}
 }
 chat.addEventListener("dragover",e=>{if(e.dataTransfer?.types.includes("Files"))e.preventDefault()});
 chat.addEventListener("drop",e=>{if(!e.dataTransfer?.files.length)return;e.preventDefault();void uploadAttachments(Array.from(e.dataTransfer.files))});
@@ -1003,7 +1051,7 @@ byId<HTMLFormElement>("calculatorForm").onsubmit=async e=>{
 byId("calculatorInsert").onclick=()=>{if(busy||selected>=0)return;const value=byId("calculatorResult").textContent??"";if(!/^-?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/i.test(value))return;chatPrompt.value=(chatPrompt.value+value).slice(0,1000);resizePrompt();byId<HTMLDialogElement>("calculatorDialog").close();chatPrompt.focus()};
 updateToolState();
 const full=byId("fullMap");
-function setFull(on:boolean){document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));syncChatIcons();requestFrame()}
+function setFull(on:boolean){if(on&&document.body.classList.contains("full-chat"))setChatFull(false);document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));syncChatIcons();requestFrame()}
 full.onclick=async()=>{
  const on=!document.body.classList.contains("full-map");setFull(on);
  if(on&&!document.fullscreenElement&&document.documentElement.requestFullscreen){try{await document.documentElement.requestFullscreen()}catch{/* map-only fallback */}}
