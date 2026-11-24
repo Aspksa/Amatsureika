@@ -49,6 +49,7 @@ jobs:
       - run: python tests/revolution_automation_smoke.py
       - run: python tests/revolution_analysis_smoke.py
       - run: python tests/global_concurrency_smoke.py
+      - run: python tests/global_memory_smoke.py
       - name: Upload startup log
         if: always()
         uses: actions/upload-artifact@v4

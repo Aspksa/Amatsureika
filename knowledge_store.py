@@ -5,7 +5,7 @@ import json
 import re
 import threading
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
 from contextlib import closing
 from datetime import datetime,timezone,date
 from uuid import uuid4
@@ -23,7 +23,7 @@ def fingerprint(kind,subject,predicate,value):
 
 class Knowledge:
     def __init__(self,chat,cloud=None):
-        self.cloud=cloud;self.chat=chat;self.stop=threading.Event();self.worker=None
+        self.cloud=cloud;self.chat=chat;self.stop=threading.Event();self.worker=None;self.query_vectors=OrderedDict();self.cache_lock=threading.Lock()
         with closing(chat.connect()) as db,db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS knowledge_items(
@@ -37,6 +37,9 @@ class Knowledge:
                 CREATE TABLE IF NOT EXISTS knowledge_links(a TEXT NOT NULL REFERENCES knowledge_items(id),b TEXT NOT NULL REFERENCES knowledge_items(id),kind TEXT NOT NULL,strength INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL,PRIMARY KEY(a,b,kind));
                 CREATE TABLE IF NOT EXISTS knowledge_vectors(item_id TEXT PRIMARY KEY REFERENCES knowledge_items(id),model TEXT NOT NULL,digest TEXT NOT NULL,vector TEXT NOT NULL,created TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS knowledge_cursor(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS knowledge_state_updated ON knowledge_items(state,updated DESC);
+                CREATE INDEX IF NOT EXISTS knowledge_links_reverse ON knowledge_links(b);
+                CREATE INDEX IF NOT EXISTS knowledge_versions_item ON knowledge_versions(item_id,id DESC);
                 CREATE INDEX IF NOT EXISTS knowledge_lookup ON knowledge_items(kind,state,subject,predicate);
             """)
     def put(self,db,kind,subject,predicate,value,context,source_type,source_id,expires=""):
@@ -54,7 +57,7 @@ class Knowledge:
         if expires:date.fromisoformat(expires)
         with closing(self.chat.connect()) as db,db:
             db.execute("BEGIN IMMEDIATE")
-            i=self.put(db,v["kind"],subject,predicate,value,context,"user_entry",uuid4().hex,expires)
+            i=self.put(db,v["kind"],subject,predicate,value,context,"user_entry",fingerprint(v["kind"],subject,predicate,value),expires)
         return {"id":i}
     def consolidate(self):
         with closing(self.chat.connect()) as db,db:
@@ -95,7 +98,7 @@ class Knowledge:
     def search(self,q,confirmed_only=False):
         q=short(q,500,False);terms=list(dict.fromkeys(re.findall(r"\w{2,}",q.casefold())))[:16]
         with closing(self.chat.connect()) as db:
-            rows=db.execute("SELECT * FROM knowledge_items WHERE state!='rejected' ORDER BY updated DESC LIMIT 1500").fetchall()
+            rows=db.execute("SELECT * FROM knowledge_items WHERE state='confirmed' AND (expires='' OR expires>=?) ORDER BY updated DESC LIMIT 1500",(date.today().isoformat(),)).fetchall() if confirmed_only else db.execute("SELECT * FROM knowledge_items WHERE state!='rejected' ORDER BY updated DESC LIMIT 1500").fetchall()
             found=[]
             for r in rows:
                 stale=bool(r["expires"] and r["expires"]<date.today().isoformat())
@@ -104,7 +107,7 @@ class Knowledge:
                 score,_=rank(terms,words) if terms else (1,[])
                 if score<=0:continue
                 found.append({**dict(r),"score":score,"stale":stale})
-            found.sort(key=lambda r:(r["score"],r["state"]=="confirmed",not r["stale"],r["confidence"],r["updated"]),reverse=True)
+            found.sort(key=lambda r:(r["score"],r["state"]=="confirmed",not r["stale"],r["confidence"],min(r["uses"],20),r["updated"]),reverse=True)
             result=found[:30]
             for r in result:
                 r["sources"]=[dict(s) for s in db.execute("SELECT source_type,source_id,added FROM knowledge_sources WHERE item_id=? ORDER BY added DESC LIMIT 8",(r["id"],))]
@@ -116,7 +119,10 @@ class Knowledge:
             rows=db.execute("SELECT kind,state,COUNT(*) n FROM knowledge_items GROUP BY kind,state").fetchall()
             return {"counts":[dict(r) for r in rows],"stale":db.execute("SELECT COUNT(*) FROM knowledge_items WHERE expires!='' AND expires<?",(date.today().isoformat(),)).fetchone()[0],"links":db.execute("SELECT COUNT(*) FROM knowledge_links").fetchone()[0],"versions":db.execute("SELECT COUNT(*) FROM knowledge_versions").fetchone()[0]}
     def context(self,q):
-        rows=self.search(q[:500],True)[:4]
+        rows=self.fusion(q[:500])[:4]
+        if rows:
+            with closing(self.chat.connect()) as db,db:
+                db.executemany("UPDATE knowledge_items SET uses=uses+1 WHERE id=? AND state='confirmed'",[(r["id"],) for r in rows])
         return [f"[Подтверждено пользователем; знание {r['id']}; уверенность пользователя {r['confidence']}; дата {r['updated'][:10]}] {r['subject']} / {r['predicate']}: {r['value'][:500]}" for r in rows]
     def history(self,i):
         with closing(self.chat.connect()) as db:
@@ -155,18 +161,62 @@ class Knowledge:
     def semantic(self,q):
         q=short(q,500)
         if not self.cloud:raise ValueError("Cloud.ru недоступен")
-        with closing(self.chat.connect()) as db:
-            rows=db.execute("SELECT k.*,v.vector FROM knowledge_items k JOIN knowledge_vectors v ON v.item_id=k.id WHERE k.state='confirmed' AND v.model=? AND (k.expires='' OR k.expires>=?) ORDER BY k.updated DESC LIMIT 1500",("Qwen/Qwen3-Embedding-0.6B",date.today().isoformat())).fetchall()
+        # Every uncached query still needs explicit consent via dispatch.
+        rows=self.vector_rows()
         if not rows:return []
-        with self.cloud.send_lock:query=self.cloud.embed(q)
-        result=[]
-        for row in rows:
-            r=dict(row);vector=json.loads(r.pop("vector"))
-            if len(vector)!=len(query):continue
-            r["semantic_score"]=sum(a*b for a,b in zip(query,vector))
-            result.append(r)
-        result.sort(key=lambda r:r["semantic_score"],reverse=True)
-        return result[:15]
+        key=hashlib.sha256(q.encode()).hexdigest()
+        with self.cloud.send_lock:
+            with self.cache_lock:query=self.query_vectors.get(key)
+            if query is None:
+                query=self.cloud.embed(q)
+                with self.cache_lock:
+                    self.query_vectors[key]=query
+                    while len(self.query_vectors)>32:self.query_vectors.popitem(last=False)
+        return self.fusion(q,query=query)
+    def vector_rows(self):
+        with closing(self.chat.connect()) as db:
+            return db.execute("SELECT k.*,v.vector,v.digest FROM knowledge_items k JOIN knowledge_vectors v ON v.item_id=k.id WHERE k.state='confirmed' AND v.model=? AND (k.expires='' OR k.expires>=?) ORDER BY k.updated DESC LIMIT 1500",("Qwen/Qwen3-Embedding-0.6B",date.today().isoformat())).fetchall()
+    def fusion(self,q,query=None):
+        lexical=self.search(q,True)
+        result={r["id"]:{**r,"lexical_score":r["score"],"fusion_score":r["score"]} for r in lexical}
+        if query is None:
+            with self.cache_lock:query=self.query_vectors.get(hashlib.sha256(q.encode()).hexdigest())
+        if query is not None:
+            for row in self.vector_rows():
+                r=dict(row);text=r["subject"]+" / "+r["predicate"]+": "+r["value"]
+                if r.pop("digest")!=hashlib.sha256(text.encode()).hexdigest():continue
+                try:vec=json.loads(r.pop("vector"))
+                except ValueError:continue
+                if not isinstance(vec,list) or len(vec)!=len(query) or any(type(x) not in (int,float) or not math.isfinite(x) for x in vec):continue
+                similarity=sum(a*b for a,b in zip(query,vec))
+                if similarity<=0:continue
+                old=result.get(r["id"])
+                lexical_score=old["lexical_score"] if old else 0
+                result[r["id"]]={**(old or r),"semantic_score":similarity,"lexical_score":lexical_score,"fusion_score":.55*lexical_score+.45*max(0,min(1,similarity))}
+            for r in result.values():
+                if "semantic_score" not in r:r["fusion_score"]*=.55
+        return sorted(result.values(),key=lambda x:(x["fusion_score"],x["confidence"],min(x["uses"],20),x["updated"]),reverse=True)[:30]
+    def health(self):
+        with closing(self.chat.connect()) as db:
+            counts=dict(db.execute("SELECT state,COUNT(*) FROM knowledge_items GROUP BY state").fetchall())
+            missing=db.execute("SELECT COUNT(*) FROM knowledge_items k WHERE NOT EXISTS(SELECT 1 FROM knowledge_sources s WHERE s.item_id=k.id)").fetchone()[0]
+            broken=db.execute("SELECT COUNT(*) FROM knowledge_links l LEFT JOIN knowledge_items a ON a.id=l.a LEFT JOIN knowledge_items b ON b.id=l.b WHERE a.id IS NULL OR b.id IS NULL").fetchone()[0]
+            expired=db.execute("SELECT COUNT(*) FROM knowledge_items WHERE expires!='' AND expires<?",(date.today().isoformat(),)).fetchone()[0]
+            vectors=db.execute("SELECT COUNT(*) FROM knowledge_vectors").fetchone()[0]
+            top=[dict(x) for x in db.execute("SELECT id,subject,predicate,uses,state FROM knowledge_items WHERE uses>0 ORDER BY uses DESC LIMIT 10")]
+            cursor=db.execute("SELECT value FROM knowledge_cursor WHERE key='chat'").fetchone()
+            lag=db.execute("SELECT COUNT(*) FROM chat_messages WHERE role='user' AND id>?",(int(cursor[0]) if cursor else 0,)).fetchone()[0]
+        return {"states":counts,"missing_provenance":missing,"broken_links":broken,"expired":expired,"vectors":vectors,"pending_messages":lag,"frequent_context":top,"note":"Частота извлечения не доказывает истинность; только подтверждённые актуальные знания входят в контекст."}
+    def graph(self,q):
+        items=self.search(q)
+        ids={r["id"] for r in items};links={}
+        for r in items:
+            for link in r.get("links",[]):
+                if link["a"] in ids and link["b"] in ids:links[(link["a"],link["b"],link["kind"])]=link
+        return {"items":[{**r,"value":r["value"][:350]} for r in items],"links":list(links.values()),"note":"Сохранённые связи. Гипотеза причины не является доказанной причиной."}
+    def timeline(self,q):
+        items=self.search(q)
+        return {"items":sorted(items,key=lambda r:(r["created"],r["id"])),"note":"Дата записи знания, не обязательно дата события. Исходный контекст сохранён."}
     def dispatch(self,v):
         if not isinstance(v,dict):raise ValueError("Некорректное действие")
         a=v.get("action")
@@ -176,6 +226,10 @@ class Knowledge:
         if a=="link":return self.link(rest)
         if a=="search" and set(rest)=={"query"}:return {"items":self.search(rest["query"])}
         if a=="stats" and not rest:return self.stats()
+        if a=="health" and not rest:return self.health()
+        if a=="graph" and set(rest)=={"query"}:return self.graph(rest["query"])
+        if a=="timeline" and set(rest)=={"query"}:return self.timeline(rest["query"])
+        if a=="fusion" and set(rest)=={"query"}:return {"items":self.fusion(short(rest["query"],500))}
         if a=="consolidate" and not rest:return self.consolidate()
         if a=="embedding_preview" and set(rest)=={"id"}:return self.embedding_preview(rest["id"])
         if a=="embed" and set(rest)=={"id","text","confirm"} and rest["confirm"] is True:return self.embed_item(rest["id"],rest["text"])

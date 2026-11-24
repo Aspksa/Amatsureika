@@ -210,6 +210,17 @@ class Router:
             if len(distinct)>=8: break
         return distinct
 
+    def repair_index(self,value):
+        if value!={"confirm":True} or value.get("confirm") is not True:raise ValueError("Подтвердите восстановление поискового индекса")
+        if not self.fts:raise ValueError("FTS5 недоступен")
+        with closing(self.chat.connect()) as db,db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO routing_chat_fts(routing_chat_fts) VALUES('rebuild')")
+            db.execute("DELETE FROM routing_workspace_fts")
+            db.execute("DELETE FROM routing_workspace_versions")
+            self.refresh_index(db,self.sources(db))
+        return {"ok":True,"note":"Восстановлены только производные индексы; исходные записи сохранены."}
+
     def search_tool(self,value):
         if not isinstance(value,dict) or set(value)!={"text","scope"} or value["scope"] not in ("all","memory","work","file"):
             raise ValueError("Некорректная область поиска")
@@ -392,7 +403,9 @@ class Router:
         if not sufficient and not mutation:
             # Reserve space for verified user knowledge and recent context.
             context_parts=[bounded_context(context_parts,3500)] if context_parts else []
-            for part in self.knowledge.context(question):
+            followup=bool(re.fullmatch(r"(?:а\s+)?(?:почему|подробнее|продолжи|а дальше|что дальше|как именно)[?.!\s]*",question,re.I))
+            knowledge_query=(previous[0][:380]+" "+question)[:500] if followup and previous else question
+            for part in self.knowledge.context(knowledge_query):
                 if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
             with closing(self.chat.connect()) as db:
                 recent=db.execute("SELECT id,role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT ?",(value["request_id"],12 if hints["style"]=="deep" else 6)).fetchall()[::-1]

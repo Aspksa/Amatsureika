@@ -100,7 +100,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction", "/api/routing/preview", "/api/routing/plan-stream", "/api/routing/export-result", "/api/agent/rules"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction", "/api/routing/preview", "/api/routing/plan-stream", "/api/routing/export-result", "/api/agent/rules", "/api/routing/repair-index"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -196,6 +196,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(self.router.search_tool(value))
             if path == "/api/routing/calculate":
                 return self.send_json(calculate(value))
+            if path == "/api/routing/repair-index":
+                return self.send_json(self.router.repair_index(value))
             if path == "/api/routing/preview":
                 return self.send_json(self.router.preview(value))
             if path == "/api/routing/export-result":
