@@ -116,14 +116,47 @@ export function curvedPoint(a:Point,b:Point,t:number,bend=.18):Point{
  return{x:v*v*a.x+2*v*p*c.x+p*p*b.x,y:v*v*a.y+2*v*p*c.y+p*p*b.y};
 }
 
-/** One visible dot per 500 messages. Stable forward triangular rows.
- * All rows lie above the core, never wrap around it. */
+/** One real point per 500 messages. Stable slots, exact chord clearance. */
 export function directedBlockLayout(count:number,mode:Mode):Layout{
- const pitch=mode==="compact"?26:mode==="hex"?40:34;
- const centers=Array.from({length:count},(_,i)=>{
-  const row=Math.floor((Math.sqrt(8*i+1)-1)/2),col=i-row*(row+1)/2;
-  return{x:(col-row/2)*pitch,y:-210-row*pitch};
+ const centers:Point[]=[],pitch=28;
+ if(mode==="radial"){
+  for(let row=0;centers.length<count;row++){
+   const r=220+row*pitch,step=2*Math.asin(pitch/(2*r)),half=Math.floor(.34/step);
+   for(let col=0;col<=2*half&&centers.length<count;col++){
+    const offset=col===0?0:Math.ceil(col/2)*(col%2===1?1:-1);
+    centers.push(polar(r,-Math.PI/2+offset*step));
+   }
+  }
+ }else if(mode==="compact"){
+  const center={x:0,y:-220};
+  if(count)centers.push(center);
+  for(let row=1;centers.length<count;row++){
+   const r=row*pitch,n=Math.floor(Math.PI/Math.asin(pitch/(2*r)));
+   for(let j=0;j<n&&centers.length<count;j++){
+    const p=polar(r,-Math.PI/2+j*TAU/n),q={x:center.x+p.x,y:center.y+p.y};
+    if(Math.hypot(q.x,q.y)>=170)centers.push(q)
+   }
+  }
+ }else{
+  for(let i=0;centers.length<count;i++){
+   const p=axialPoint(i,pitch),q={x:p.x,y:p.y-220};
+   if(Math.hypot(q.x,q.y)>=170)centers.push(q)
+  }
+ }
+ const edge=centers.reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+14),180);
+ const outer=Math.max(300,edge+72),radius=outer+58;
+ return{mode,radius,outer,edge,centers,radii:centers.map(()=>12),orbits:[116,148,outer-28,outer],point:i=>centers[i],label:i=>centers[i]};
+}
+/** Allocate only real registered modules, with disjoint 38-unit hit areas. */
+export function functionalOrbit(count:number,radius:number):Point[]{
+ const r=Math.max(220,radius+22),step=2*Math.asin(46/(2*r)),capacity=Math.max(1,Math.floor((Math.PI/2-.24)/step)+1);
+ return Array.from({length:count},(_,i)=>{
+  const row=Math.floor(i/capacity),rr=r+row*46,ss=2*Math.asin(46/(2*rr));
+  return polar(rr,-Math.PI/2+.12+(i%capacity)*ss)
  });
- const radius=centers.reduce((r,p)=>Math.max(r,Math.hypot(p.x,p.y)+48),260);
- return{mode,radius,outer:radius,centers,radii:centers.map(()=>12),orbits:[116,148],point:i=>centers[i],label:i=>centers[i]};
+}
+/** Separate downward file sector, outside the occupied memory disk. */
+export function documentPoint(i:number,edge:number):Point{
+ const row=Math.floor((Math.sqrt(8*i+1)-1)/2),col=i-row*(row+1)/2;
+ return{x:(col-row/2)*28,y:Math.max(220,edge+42)+row*28};
 }

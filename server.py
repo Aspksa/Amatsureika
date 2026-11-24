@@ -32,11 +32,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        if path in ("/api/work","/api/disk","/api/disk/download"):
+        if path in ("/api/work","/api/disk","/api/disk/download","/api/workspace/map"):
             if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                 return self.send_json({"error":"Invalid host"},403)
             try:
                 query=parse_qs(urlsplit(self.path).query)
+                if path=="/api/workspace/map":
+                    return self.send_json(self.workspace.map_summary())
                 if path=="/api/work":
                     return self.send_json(self.workspace.work())
                 if path=="/api/disk":
