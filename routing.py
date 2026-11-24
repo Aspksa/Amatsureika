@@ -1,5 +1,6 @@
 """Local-first retrieval and explicitly approved, bounded cloud context."""
 import json
+from tool_engine import ToolEngine, catalog, command, report_text
 import ast
 from decimal import Decimal, localcontext, DecimalException
 import re
@@ -63,6 +64,7 @@ def excerpt(text,terms,limit=700):
 class Router:
     def __init__(self,chat,workspace,cloud):
         self.chat,self.workspace,self.cloud=chat,workspace,cloud
+        self.tools=ToolEngine(workspace,chat)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
@@ -160,7 +162,7 @@ class Router:
             offsets={};total=0
             for p in pages: offsets[p["id"]]=total;total+=p["count"]
             for r in chatrows:
-                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт")): continue
+                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite")): continue
                 block=(offsets[r["cluster_id"]]+r["position"]-1)//500+1
                 candidates.append(("memory",block,"Сообщение #"+str(r["id"])+" ("+r["role"]+")",r["text"],r["created_at"],r["id"]))
         hits=[]
@@ -191,10 +193,15 @@ class Router:
     def plan(self,value):
         value=validate(value)
         q=value["text"]
-        hits=self.search(q)
+        tool=command(q)
+        report=self.tools.run(tool) if tool else None
+        hits=self.search(q) if report is None else []
         count_kinds={"сотрудников":"staff","автомобилей":"vehicles","машин":"vehicles","топливных карт":"cards","записей табеля":"timesheet","записей гсм":"fuel"}
         count_match=re.fullmatch(r"сколько\s+(сотрудников|автомобилей|машин|топливных карт|записей табеля|записей гсм|файлов|документов|сообщений)[?\s]*",q.casefold())
         count_answer=None
+        if report is not None:
+            count_answer=report_text(report)
+            hits=[{**h,"message_id":None,"text":"Источник учтён в локальном отчёте","updated":report["generated"],"age_days":0,"coverage":1,"matched":[]} for h in report["sources"]]
         if count_match:
             what=count_match.group(1)
             summary=self.workspace.map_summary()
@@ -228,7 +235,7 @@ class Router:
         if any(h["age_days"]>365 for h in hits): local+="\nНекоторые источники старше года; актуальность не подтверждена."
         if conflicts: local+="\nВозможные расхождения: "+"; ".join(conflicts)
         if count_answer is not None: local=count_answer;conflicts=[]
-        plan={"token":uuid4().hex,"hits":hits,"intent":"count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts}
+        plan={"token":uuid4().hex,"hits":hits,"intent":"tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts}
         with self.lock:
             now=time.monotonic()
             for k in list(self.plans):
