@@ -92,7 +92,7 @@ class ChatStore:
                 rows = db.execute("SELECT * FROM chat_messages WHERE cluster_id=? ORDER BY position", (cluster,)).fetchall()
             return {"clusters": clusters, "messages": [dict(row) for row in rows]}
 
-    def append(self, value):
+    def append(self, value, reply=LOCAL_REPLY):
         if not self.startup_health["ok"]:
             raise RuntimeError("Chat integrity check failed; writes disabled")
         if not isinstance(value, dict) or set(value) != {"text", "request_id"}:
@@ -116,7 +116,7 @@ class ChatStore:
             cid = last["id"] if last else db.execute("INSERT INTO chat_clusters(previous_id,created_at) VALUES(NULL,?)", (now,)).lastrowid
             n = db.execute("SELECT COUNT(*) FROM chat_messages WHERE cluster_id=?", (cid,)).fetchone()[0]
             saved = []
-            for role, body in (("user", text), ("assistant", LOCAL_REPLY)):
+            for role, body in (("user", text), ("assistant", reply)):
                 if n >= CAPACITY:
                     cid = db.execute("INSERT INTO chat_clusters(previous_id,created_at) VALUES(?,?)", (cid, now)).lastrowid
                     n = 0
@@ -127,3 +127,56 @@ class ChatStore:
             if n == CAPACITY:
                 db.execute("INSERT INTO chat_clusters(previous_id,created_at) VALUES(?,?)", (cid,now))
             return {"clusters": self.clusters(db), "messages": saved, "duplicate": False}
+
+    # The physical 200-row pages remain intact for compatibility. The visual
+    # projection uses chronological 500-message blocks, not new copies of text.
+    @staticmethod
+    def project(clusters, messages):
+        offsets = {}
+        total = 0
+        for c in clusters:
+            offsets[c["id"]] = total
+            total += c["count"]
+        blocks = [{"id": i+1, "previous_id": i or None,
+                   "count": min(500, total-i*500)} for i in range((total+499)//500)]
+        converted = []
+        for m in messages:
+            ordinal = offsets[m["cluster_id"]] + m["position"] - 1
+            converted.append({**m, "cluster_id": ordinal//500+1, "position": ordinal%500+1})
+        return {"clusters": blocks, "messages": converted}
+
+    def memory_snapshot(self, block=None):
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN")
+            pages = self.clusters(db)
+            if block is None:
+                rows = db.execute("SELECT * FROM chat_messages ORDER BY id DESC LIMIT 500").fetchall()[::-1]
+            else:
+                if block < 1 or block > (sum(c["count"] for c in pages)+499)//500:
+                    raise ValueError("Unknown block")
+                # Read at most four physical pages using their indexed IDs.
+                lo, hi = (block-1)*500, block*500
+                offset = 0
+                rows = []
+                for c in pages:
+                    end = offset+c["count"]
+                    if end > lo and offset < hi:
+                        rows.extend(db.execute("SELECT * FROM chat_messages WHERE cluster_id=? AND position BETWEEN ? AND ? ORDER BY position",
+                            (c["id"],max(1,lo-offset+1),min(c["count"],hi-offset))).fetchall())
+                    offset = end
+                    if offset >= hi:
+                        break
+            return self.project(pages, [dict(r) for r in rows])
+
+    def memory_append(self, value, reply=LOCAL_REPLY):
+        result = self.append(value, reply)
+        return {**self.project(result["clusters"], result["messages"]), "duplicate": result["duplicate"]}
+
+    def existing_request(self, value):
+        with closing(self.connect()) as db, db:
+            rows = db.execute("SELECT * FROM chat_messages WHERE request_id=? ORDER BY id",(value["request_id"],)).fetchall()
+            if not rows:
+                return None
+            if rows[0]["text"] != value["text"].strip():
+                raise ValueError("Request already used")
+            return {**self.project(self.clusters(db), [dict(r) for r in rows]), "duplicate": True}
