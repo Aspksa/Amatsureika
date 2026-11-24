@@ -3,6 +3,8 @@ import json
 from tool_engine import ToolEngine, catalog, command, report_text
 from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
 from agent_engine import Agent, parse as agent_parse
+from work_import import Importer
+from evidence import rank as sparse_rank, evidence_links, missing_terms
 import ast
 from decimal import Decimal, localcontext, DecimalException
 import re
@@ -69,6 +71,7 @@ class Router:
         self.tools=ToolEngine(workspace,chat)
         self.advanced=AdvancedTools(workspace,self.tools,extract)
         self.agent=Agent(chat,workspace,self.tools,self.advanced)
+        self.importer=Importer(workspace)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
@@ -135,7 +138,7 @@ class Router:
         terms=tokens(q)
         if not terms: return []
         # Safe, literal FTS query; no user-controlled operators.
-        match=" OR ".join('"'+t+'"' for t in terms)
+        match=" OR ".join('"'+t+'"' + (' OR "'+t[:4]+'"*' if len(t)>=6 else "") for t in terms)
         candidates=[]
         with closing(self.chat.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE" if self.fts else "BEGIN")
@@ -173,12 +176,12 @@ class Router:
         for source,i,title,body,stamp,message in candidates:
             if scope!="all" and source!=scope: continue
             words=set(tokens(title+" "+body)) if len(body)<120 else set(re.findall(r"[^\W_]+",(title+" "+body).casefold()))
-            found=[t for t in terms if t in words]
-            if not found: continue
+            similarity,found=sparse_rank(terms,words)
+            if similarity<=0: continue
             try: age=max(0,(datetime.now(timezone.utc)-datetime.fromisoformat(stamp)).days)
             except (ValueError,TypeError): age=9999
-            hits.append({"trust":"register" if source=="work" else "document" if source=="file" else "historical_statement","source":source,"id":i,"message_id":message,"title":title,"text":excerpt(body,terms),"updated":stamp,"age_days":age,"coverage":len(found)/len(terms),"matched":found})
-        hits.sort(key=lambda h:(h["coverage"],h["source"]=="work",-h["age_days"]),reverse=True)
+            hits.append({"trust":"register" if source=="work" else "document" if source=="file" else "historical_statement","source":source,"id":i,"message_id":message,"title":title,"text":excerpt(body,terms),"updated":stamp,"age_days":age,"coverage":len(found)/len(terms),"similarity":similarity,"matched":found})
+        hits.sort(key=lambda h:(h["coverage"],h.get("similarity",0),h["source"]=="work",-h["age_days"]),reverse=True)
         # Keep several different sources instead of repeating identical excerpts.
         distinct=[];seen=set()
         for h in hits:
@@ -272,6 +275,8 @@ class Router:
                     conflicts.append("Несколько разных рабочих записей: "+a["title"]);break
         conflicts=list(dict.fromkeys(conflicts))[:3]
         sufficient=count_answer is not None or (lookup and bool(hits) and hits[0]["coverage"]>=.75 and not conflicts)
+        links=evidence_links(hits) if count_answer is None else []
+        missing=missing_terms(tokens(question),hits) if count_answer is None else []
         context_parts=[]
         for h in hits:
             part=f"[{h['source']} #{h['id']}; {h['title']}; дата {h['updated'][:10]}] {h['text']}"
@@ -290,7 +295,10 @@ class Router:
         if any(h["age_days"]>365 for h in hits): local+="\nНекоторые источники старше года; актуальность не подтверждена."
         if conflicts: local+="\nВозможные расхождения: "+"; ".join(conflicts)
         if count_answer is not None: local=count_answer;conflicts=[]
-        plan={"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation}
+        else:
+            if missing:local+="\nБез точного подтверждения в найденных выдержках: "+", ".join(missing)+"."
+            if links:local+="\nПересечения источников (общие слова, не причинность): "+"; ".join(x["from"]+" ↔ "+x["to"]+": "+", ".join(x["terms"]) for x in links[:4])
+        plan={"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation,"missing":missing,"links":links}
         with self.lock:
             now=time.monotonic()
             for k in list(self.plans):
@@ -299,7 +307,7 @@ class Router:
             self.plans[plan["token"]]=(now,value,plan)
         return plan
 
-    def execute(self,value):
+    def execute(self,value,emit=None):
         if not isinstance(value,dict) or set(value) not in ({"token","request_id","text","cloud"},{"token","request_id","text","cloud","approve_edit"}) or type(value["cloud"]) is not bool or type(value.get("approve_edit",False)) is not bool:
             raise ValueError("Некорректное подтверждение")
         req=validate({"text":value["text"],"request_id":value["request_id"]})
@@ -322,7 +330,7 @@ class Router:
                 with self.cloud.send_lock:
                     existing=self.chat.existing_request(req)
                     if existing:return existing
-                    reply=self.cloud.complete(req["text"],plan["context"])
+                    reply=self.cloud.complete_stream(req["text"],plan["context"],emit) if emit is not None else self.cloud.complete(req["text"],plan["context"])
                     result=self.chat.memory_append(req,reply)
             else:
                 answer=plan["local"]

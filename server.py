@@ -96,7 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -119,9 +119,28 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "Expected JSON"}, 415)
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute","/api/agent/run","/api/agent/save") else 4096):
+            if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute","/api/agent/run","/api/agent/save","/api/routing/stream") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
+            if path == "/api/routing/stream":
+                # HTTP close-delimited NDJSON, each line flushed immediately.
+                self.send_response(200)
+                self.send_header("Content-Type","application/x-ndjson; charset=utf-8")
+                self.send_header("Cache-Control","no-store")
+                self.send_header("Connection","close")
+                self.end_headers()
+                self.close_connection=True
+                def event(value):
+                    self.wfile.write((json.dumps(value,ensure_ascii=False)+"\n").encode("utf-8"))
+                    self.wfile.flush()
+                try:
+                    result=self.router.execute(value,emit=lambda part:event({"type":"delta","text":part}))
+                    event({"type":"done","result":result})
+                except (BrokenPipeError,ConnectionResetError):pass
+                except (ValueError,TypeError,CloudError,RuntimeError,sqlite3.Error,OSError) as exc:
+                    try:event({"type":"error","error":str(exc) if isinstance(exc,(ValueError,CloudError)) else "Поток прерван; автоматического повтора нет"})
+                    except OSError:pass
+                return
             if path == "/api/agent/export":
                 data,filename,mime=export_report(self.router.tools,value)
                 self.send_response(200)
@@ -132,6 +151,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if path == "/api/agent/import-preview":
+                return self.send_json(self.router.importer.preview(value))
+            if path == "/api/agent/timesheet-preview":
+                return self.send_json(self.router.importer.fill(value))
+            if path == "/api/agent/import-commit":
+                return self.send_json(self.router.importer.commit(value))
             if path == "/api/agent/state":
                 if value!={}:raise ValueError("Некорректный запрос")
                 return self.send_json(self.router.agent.state())
