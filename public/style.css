@@ -286,3 +286,5 @@ body.full-chat #stage{display:none!important}body.full-chat #chat:not([hidden]){
 #chatIcon[data-phase=search] .cloud-shell{animation:chat-receive .8s ease-out 1}#chatIcon[data-phase=upload] .cloud-shell{stroke:#b6a3e1;filter:drop-shadow(0 0 4px #b6a3e1)}@keyframes chat-receive{0%{stroke-width:1}40%{stroke-width:2.8}100%{stroke-width:1}}
 @media(max-width:720px){#chatResize{display:none}#chat:not([hidden]){width:100%;padding:12px 18px}#messages .message-content p{font-size:13px;line-height:1.7}body.full-chat #chat:not([hidden]){height:100%;width:100%;padding:14px 18px}}
 @media(prefers-reduced-motion:reduce){#chatIcon .cloud-shell,.chat-result[open]>div,.long-answer[open] .message-content,.chat-tools{animation:none!important}}
+
+#chatPlanSteps{white-space:pre-wrap;font:12px/1.7 Consolas,monospace;color:#b5cdd5}#chatProgress:empty,#chatSuggestion:empty{display:none}#chatProgress{color:#8dd6cb}#chatSuggestion{color:#8aa9b4}

@@ -4,7 +4,7 @@ import re
 import time
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -164,7 +164,7 @@ class Agent:
                 except (ValueError,RuntimeError,OSError,sqlite3.Error):pass
             return {"text":"Ошибка инструмента: "+str(e),"sources":[],"status":"error"}
 
-    def run(self,steps):
+    def run(self,steps,progress=None):
         steps=self.validate(steps);results={};pending=list(steps)
         with ThreadPoolExecutor(max_workers=3) as pool:
             while pending:
@@ -173,8 +173,15 @@ class Agent:
                 for s in batch:
                     if any(results[i]["status"]!="ok" for i in s["depends"]):
                         results[s["id"]]={"text":"Пропущено: зависимость не выполнена","status":"skipped","sources":[]}
-                    else:futures[s["id"]]=pool.submit(self.one,s,{i:results[i] for i in s["depends"]})
-                for i,f in futures.items():results[i]=f.result()
+                    else:
+                        if progress:progress({"id":s["id"],"tool":s["tool"],"status":"scheduled"})
+                        futures[pool.submit(self.one,s,{i:results[i] for i in s["depends"]})]=s
+                for f in as_completed(futures):
+                    s=futures[f];i=s["id"];results[i]=f.result()
+                    if progress:progress({"id":i,"tool":s["tool"],"status":results[i]["status"]})
+                if progress:
+                    for s in batch:
+                        if results[s["id"]]["status"]=="skipped":progress({"id":s["id"],"tool":s["tool"],"status":"skipped"})
                 pending=[s for s in pending if s not in batch]
         return {"steps":[{"id":s["id"],"tool":s["tool"],**results[s["id"]]} for s in steps],"ok":all(v["status"]=="ok" for v in results.values()),"snapshot":"Отдельные снимки SQLite; не единая транзакция"}
 

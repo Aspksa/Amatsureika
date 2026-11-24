@@ -1,5 +1,7 @@
 """Local-first retrieval and explicitly approved, bounded cloud context."""
 import json
+import io
+from report_export import xlsx, docx
 from tool_engine import ToolEngine, catalog, command, report_text
 from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
 from agent_engine import Agent, parse as agent_parse
@@ -204,7 +206,27 @@ class Router:
         if not isinstance(q,str) or not q.strip() or len(q)>1000: raise ValueError("Некорректный поиск")
         return {"hits":self.search(q, value["scope"]),"fts":self.fts}
 
-    def plan(self,value):
+    def preview(self,value):
+        req=validate(value);q=normalize_request(req["text"])
+        with closing(self.chat.connect()) as db:
+            previous=db.execute("SELECT text FROM chat_messages WHERE role='user' AND request_id!=? ORDER BY id DESC LIMIT 1",(req["request_id"],)).fetchone()
+        attachment_ids=list(dict.fromkeys(int(x) for x in re.findall(r"(?m)^\[Документ #(\d{1,12})\]$",q)))
+        steps=agent_parse(q,previous[0] if previous else None) if not attachment_ids and not parse_command(q) else None
+        return {"steps":self.agent.validate(steps) if steps else [],"note":"Предварительный план только чтения; данные будут рассчитаны после запуска."}
+
+    def export_result(self,v):
+        if not isinstance(v,dict) or set(v)!={"message","format","confirm"} or v["confirm"] is not True or type(v["message"]) is not int or v["format"] not in ("xlsx","docx"):raise ValueError("Подтвердите экспорт")
+        with closing(self.chat.connect()) as db:
+            row=db.execute("SELECT m.id,m.created_at,r.payload FROM chat_messages m JOIN chat_result_meta r USING(request_id) WHERE m.id=? AND m.role='assistant'",(v["message"],)).fetchone()
+        if not row:raise ValueError("Сохранённая таблица отсутствует")
+        meta=json.loads(row["payload"]);table=meta.get("table")
+        if not table:raise ValueError("В ответе нет структурированной таблицы")
+        report={"title":"Результат ответа #"+str(row["id"]),"month":"","summary":["Снимок сохранённого результата, не пересчёт"],"columns":table["columns"],"rows":table["rows"],"total_rows":table["total_rows"],"generated":row["created_at"]}
+        data=(xlsx if v["format"]=="xlsx" else docx)(report)
+        name="chat-"+str(row["id"])+"-"+uuid4().hex[:8]+"."+v["format"]
+        return {**self.workspace.upload(None,name,io.BytesIO(data),len(data)),"name":name}
+
+    def plan(self,value,progress=None,approved_steps=None):
         value=validate(value)
         original=value["text"]
         q=normalize_request(original)
@@ -219,6 +241,7 @@ class Router:
         with closing(self.chat.connect()) as db:
             previous=db.execute("SELECT text FROM chat_messages WHERE role='user' AND request_id!=? ORDER BY id DESC LIMIT 1",(value["request_id"],)).fetchone()
         agent_steps=agent_parse(q,previous[0] if previous else None) if not task and not attachment_ids else None
+        if approved_steps is not None and (agent_steps or [])!=approved_steps:raise ValueError("План изменился; запросите предварительный просмотр заново")
         receipt=self.workspace.edit_receipt(value["request_id"],original)
         if receipt:
             advanced_answer="Изменение уже сохранено: запись #"+str(receipt["id"])+" · "+receipt["label"]
@@ -246,7 +269,15 @@ class Router:
             else:
                 parts=[]
                 for a,b in zip(attachment_ids,attachment_ids[1:]):
-                    try:parts.append(compare_text(self.advanced.compare(a,b)))
+                    try:
+                        _,name_a,_=self.workspace.download(a);_,name_b,_=self.workspace.download(b)
+                        if Path(name_a).suffix.lower() in (".csv",".xlsx") and Path(name_b).suffix.lower() in (".csv",".xlsx"):
+                            key_match=re.search(r"(?:ключ|по столбцу)\s*[:=]\s*([^\n]{1,100})",question,re.I)
+                            if not key_match:parts.append(f"#{a} / #{b}: укажите «ключ: название столбца».")
+                            else:
+                                result=self.cognitive.dispatch({"action":"compare","a":a,"b":b,"key":key_match[1].strip()})
+                                parts.append(f"#{a} / #{b}: "+json.dumps(result,ensure_ascii=False)[:4000])
+                        else:parts.append(compare_text(self.advanced.compare(a,b)))
                     except ValueError as e:parts.append(f"#{a} / #{b}: {e}")
                 advanced_answer="Сравнение вложений:\n"+"\n\n".join(parts)[:12000]
                 meta["tools"].append("compare")
@@ -278,7 +309,8 @@ class Router:
                 out=self.cognitive.dispatch({"action":"performance"})
                 advanced_answer="Диагностика инструментов:\n"+"\n".join(f"{r['tool']} · {r['status']} · {r['n']} запусков · {r['avg_ms']:.1f} мс" for r in out["metrics"][:50])+"\n"+out["note"]
         if agent_steps and advanced_answer is None:
-            run=self.agent.run(agent_steps)
+            run=self.agent.run(agent_steps,progress=progress)
+            if not run['ok']:meta['warnings'].append('Не все шаги выполнены; результат неполный.')
             meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{"tool":s["tool"],"status":s["status"]} for s in run["steps"]]
             advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
             advanced_sources=[h for s in run["steps"] for h in s["sources"]]
@@ -339,12 +371,14 @@ class Router:
             if len("\n".join(context_parts+[part]))>CONTEXT_LIMIT: break
             context_parts.append(part)
         if not sufficient and not mutation:
+            # Reserve space for verified user knowledge and recent context.
+            context_parts=[bounded_context(context_parts,3500)] if context_parts else []
             for part in self.knowledge.context(question):
                 if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
             with closing(self.chat.connect()) as db:
-                recent=db.execute("SELECT role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT ?",(value["request_id"],8 if hints["style"]=="deep" else 4)).fetchall()[::-1]
+                recent=db.execute("SELECT id,role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT ?",(value["request_id"],12 if hints["style"]=="deep" else 6)).fetchall()[::-1]
             for r in recent:
-                part="[Недавний диалог; "+r["role"]+"] "+r["text"][:400]
+                part="[Недавний диалог #"+str(r["id"])+"; "+r["role"]+"] "+r["text"][:300]
                 if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
         context=bounded_context(context_parts,CONTEXT_LIMIT)
         lines=[f"[{h['source']} #{h['id']}] {h['title']} ({h['updated'][:10]}): {h['text']}" for h in hits]
@@ -358,6 +392,9 @@ class Router:
             if links:local+="\nПересечения источников (общие слова, не причинность): "+"; ".join(x["from"]+" ↔ "+x["to"]+": "+", ".join(x["terms"]) for x in links[:4])
         if meta.get("document_summary") and count_answer is None:local=meta["document_summary"]+"\n\n"+local
         meta["sources"]=[{"source":h["source"],"id":h["id"],"title":h["title"]} for h in hits[:8]]
+        meta["links"]=links[:8];meta["missing"]=missing;meta["conflicts"]=conflicts
+        if missing:meta["warnings"].append("Неподтверждённые термины: "+", ".join(missing))
+        if conflicts:meta["warnings"].extend(conflicts)
         plan={"web_offer":hints["web"] if not mutation and not attachment_ids else None,"metadata":meta,"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation,"missing":missing,"links":links}
         with self.lock:
             now=time.monotonic()
@@ -388,6 +425,7 @@ class Router:
             sources=web_evidence(data);meta=plan["metadata"];meta["web_sources"]=sources;meta["tools"].append("web")
             conflicts=possible_conflicts(plan["hits"],sources)
             plan["conflicts"]=(plan["conflicts"]+conflicts)[:6]
+            meta["conflicts"]=plan["conflicts"];meta["warnings"].extend(conflicts)
             parts=["[Интернет-источник; непроверенная выдержка; "+p["url"]+"; дата "+(p["date"] or "не указана")+"] "+p["title"]+" "+p["excerpt"] for p in sources]
             plan["context"]=bounded_context([plan["context"][:2300]]+parts,CONTEXT_LIMIT)
             # No hallucinated synthesis offline. Preserve local results and show excerpts.
@@ -423,14 +461,14 @@ class Router:
                     existing=self.chat.existing_request(req)
                     if existing:return existing
                     reply=self.cloud.complete_stream(req["text"],plan["context"],emit) if emit is not None else self.cloud.complete(req["text"],plan["context"])
-                    meta=plan["metadata"];meta["warnings"]=verify_reply(reply,meta)
+                    meta=plan["metadata"];meta["warnings"]+=verify_reply(reply,meta)
                     result=self.chat.memory_append(req,reply,meta)
             else:
                 answer=plan["local"]
                 if mutation and value.get("approve_edit"):
                     self.advanced.apply(mutation,req["request_id"],req["text"])
                     answer="Изменение сохранено локально: запись #"+str(mutation["id"])+" · "+mutation["label"]+": "+str(mutation["before"])+" → "+str(mutation["after"])
-                meta=plan["metadata"];meta["warnings"]=verify_reply(answer,meta)
+                meta=plan["metadata"];meta["warnings"]+=verify_reply(answer,meta)
                 result=self.chat.memory_append(req,answer,meta)
                 self.plans.pop(value["token"],None)
             return {**result,"route":"cloud" if paid else "local"}

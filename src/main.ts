@@ -19,7 +19,7 @@ const key=(i:number,n:number,outer:boolean)=>i+":"+n+":"+outer;
 const counts:number[]=[];
 type ChatCluster={id:number;previous_id:number|null;count:number};
 type ResultSource={source:"memory"|"work"|"file";id:number;title:string};
-type ResultMeta={style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
+type ResultMeta={links?:{from:string;to:string;terms:string[]}[];missing?:string[];conflicts?:string[];style?:string;tools?:string[];warnings?:string[];sources?:ResultSource[];web_sources?:{title:string;url:string;date:string;excerpt:string}[];series?:number[];steps?:{tool:string;status:string}[];table?:{columns:string[];rows:string[][];total_rows:number}};
 type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string;metadata?:ResultMeta};
 type Snapshot={clusters:ChatCluster[];messages:ChatMessage[];duplicate?:boolean};
 let clusters:ChatCluster[]=[];
@@ -299,6 +299,7 @@ function syncChatIcons(){
  chatToggle.setAttribute("aria-expanded",String(open));group("chatIcon").setAttribute("aria-expanded",String(open));group("chatIcon").classList.toggle("chat-open",open);
 }
 function toggleChat(){
+ if(document.body.classList.contains("full-chat")){setChatFull(false);return}
  if(document.body.classList.contains("full-map")){
   setFull(false);if(document.fullscreenElement)void document.exitFullscreen().catch(()=>{});
   chat.hidden=false;
@@ -353,13 +354,14 @@ function sourceAction(h:ResultSource){
  else if(h.source==="work"){const r=workspaceMap.records.find(x=>x.id===h.id);if(r)void workspaceUI.openRecord(r.kind,r.id);else chatStatus.textContent="Запись недоступна или архивирована"}
  else{const f=workspaceMap.files.find(x=>x.id===h.id);if(f){byId<HTMLAnchorElement>("fileDownload").href="/api/disk/download?id="+f.id;byId("fileDetailName").textContent=f.name;byId("fileDetailSize").textContent=(f.size/1024).toLocaleString("ru",{maximumFractionDigits:1})+" КБ";byId<HTMLDialogElement>("fileDetail").showModal()}else chatStatus.textContent="Файл недоступен"}
 }
-function resultCard(meta:ResultMeta){
+function resultCard(meta:ResultMeta,messageId:number){
  const root=document.createElement("details");root.className="chat-result";const summary=document.createElement("summary");summary.textContent="Источники и инструменты"+(meta.tools?.length?" · "+meta.tools.join(", "):"");root.append(summary);
  if(meta.steps?.length){const p=document.createElement("p");p.textContent=meta.steps.map(s=>s.tool+" · "+s.status).join(" / ");root.append(p)}
  for(const h of meta.sources??[]){const b=document.createElement("button");b.type="button";b.textContent=h.title+" · #"+h.id;b.onclick=()=>sourceAction(h);root.append(b)}
  for(const h of meta.web_sources??[]){const div=document.createElement("div"),a=document.createElement("a");try{if(new URL(h.url).protocol!=="https:")continue}catch{continue}a.href=h.url;a.target="_blank";a.rel="noopener noreferrer";a.textContent=h.title;div.append(a);const p=document.createElement("p");p.textContent=(h.date||"Дата не указана")+" · непроверенная выдержка: "+h.excerpt;div.append(p);root.append(div)}
  if(meta.warnings?.length){const p=document.createElement("p");p.textContent=meta.warnings.join(" ");p.className="result-warning";root.append(p)}
- if(meta.table){const t=meta.table,wrap=document.createElement("div"),table=document.createElement("table"),head=document.createElement("tr"),body=document.createElement("tbody");wrap.className="chat-table-scroll";for(let i=0;i<t.columns.length;i++){const th=document.createElement("th"),b=document.createElement("button");b.type="button";b.textContent=t.columns[i];let asc=true;b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((x,y)=>(x.cells[i].textContent??"").localeCompare(y.cells[i].textContent??"","ru",{numeric:true})*(asc?1:-1));asc=!asc;body.append(...rows)};th.append(b);head.append(th)}table.append(head);for(const row of t.rows){const tr=document.createElement("tr");for(const v of row){const td=document.createElement("td");td.textContent=v;tr.append(td)}body.append(tr)}table.append(body);wrap.append(table);root.append(wrap);const p=document.createElement("p");p.textContent="Показано "+t.rows.length+" из "+t.total_rows;root.append(p)}
+ if(meta.links?.length){const p=document.createElement("p");p.textContent="Связи по общим словам (не причинность): "+meta.links.map(l=>l.from+" ↔ "+l.to+" · "+l.terms.join(", ")).join("; ");root.append(p)}
+ if(meta.table){const t=meta.table,wrap=document.createElement("div"),table=document.createElement("table"),head=document.createElement("tr"),body=document.createElement("tbody");wrap.className="chat-table-scroll";for(let i=0;i<t.columns.length;i++){const th=document.createElement("th"),b=document.createElement("button");b.type="button";b.textContent=t.columns[i];let asc=true;b.onclick=()=>{const rows=Array.from(body.rows);rows.sort((x,y)=>(x.cells[i].textContent??"").localeCompare(y.cells[i].textContent??"","ru",{numeric:true})*(asc?1:-1));asc=!asc;body.append(...rows)};th.append(b);head.append(th)}table.append(head);for(const row of t.rows){const tr=document.createElement("tr");for(const v of row){const td=document.createElement("td");td.textContent=v;tr.append(td)}body.append(tr)}table.append(body);wrap.append(table);root.append(wrap);const p=document.createElement("p");p.textContent="Показано "+t.rows.length+" из "+t.total_rows;root.append(p);for(const format of ["xlsx","docx"]){const b=document.createElement("button");b.type="button";b.textContent="Сохранить "+format.toUpperCase();b.onclick=async()=>{if(busy||!confirm("Сохранить именно эту таблицу на Диск?"))return;b.disabled=true;try{const out=await routingPost<{name:string}>("export-result",{message:messageId,format,confirm:true});chatStatus.textContent="Сохранено: "+out.name;await refreshWorkspaceMap(true)}catch(e){chatStatus.textContent=e instanceof Error?e.message:"Ошибка"}finally{b.disabled=false}};root.append(b)}}
  if(meta.series?.length){const chart=document.createElement("div");chart.className="chat-series";root.append(chart);drawSeries(meta.series,chart);root.open=true}
  return root;
 }
@@ -367,7 +369,7 @@ function renderMessage(m:ChatMessage){
 
  const article=document.createElement("article");article.className="chat-message "+(m.role==="user"?"user-message":"reply");article.dataset.message=String(m.id);article.dataset.role=m.role;
  article.dataset.raw=m.text;const content=document.createElement("div");content.className="message-content";if(m.role==="assistant")renderMarkdown(content,m.text);else{const p=document.createElement("p");p.textContent=m.text;content.append(p)}if(m.role==="assistant"&&m.text.length>2200){const folded=document.createElement("details");folded.className="long-answer";const summary=document.createElement("summary");summary.textContent="Развернуть полный ответ · "+m.text.length.toLocaleString("ru")+" символов";const preview=document.createElement("p");preview.className="answer-preview";preview.textContent=m.text.slice(0,420)+"…";folded.append(summary,content);folded.ontoggle=()=>{preview.hidden=folded.open};article.append(preview,folded)}else article.append(content);
- if(m.role==="assistant"&&m.metadata&&(m.metadata.tools?.length||m.metadata.sources?.length||m.metadata.web_sources?.length||m.metadata.warnings?.length))article.append(resultCard(m.metadata));
+ if(m.role==="assistant"&&m.metadata&&(m.metadata.tools?.length||m.metadata.sources?.length||m.metadata.web_sources?.length||m.metadata.warnings?.length))article.append(resultCard(m.metadata,m.id));
  const actions=document.createElement("div");actions.className="message-actions";
  const copy=document.createElement("button");copy.type="button";copy.textContent="Копировать";copy.onclick=()=>void copyText(m.text);actions.append(copy);
  if(m.role==="user"){const reuse=document.createElement("button");reuse.type="button";reuse.textContent="Повторить";reuse.onclick=()=>{if(busy)return;if(selected>=0)select(selected);chatPrompt.value=m.text.slice(0,1000);resizePrompt();chatPrompt.focus()};actions.append(reuse)}
@@ -516,6 +518,28 @@ async function retrieveAnimation(hits:SearchHit[]){
  }));
 }
 function chatPhase(phase:string){group("chatIcon").dataset.phase=phase;chat.dataset.phase=phase;if(phase==="search")arrival(group("chatIcon"),"request")}
+type PreviewStep={id:string;tool:string;month:string;depends:string[]};
+async function previewChatPlan(request:{text:string;request_id:string}){
+ const preview=await routingPost<{steps:PreviewStep[];note:string}>("preview",request);
+ if(!preview.steps.length)return preview.steps;
+ const dialog=byId<HTMLDialogElement>("chatPlanDialog"),output=byId("chatPlanSteps");
+ output.textContent=preview.steps.map((s,i)=>(i+1)+". "+s.tool+(s.month?" · "+s.month:"")+(s.depends.length?" · после "+s.depends.join(", "):" · независимый шаг")).join("\n");
+ const ok=await new Promise<boolean>(resolve=>{dialog.returnValue="cancel";dialog.addEventListener("close",()=>resolve(dialog.returnValue==="run"),{once:true});dialog.showModal()});
+ if(!ok){cancelPreparation=true;throw Error("План отменён")}return preview.steps
+}
+async function runChatPlan(request:{text:string;request_id:string},steps:PreviewStep[]):Promise<RoutePlan>{
+ if(!steps.length)return routingPost<RoutePlan>("plan",request);
+ const response=await fetch("/api/routing/plan-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...request,steps})});
+ if(!response.ok||!response.body)throw Error("Нет потока плана");
+ const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="",result:RoutePlan|undefined;
+ const statuses=new Map<string,string>();
+ try{while(true){const chunk=await reader.read();buffer+=decoder.decode(chunk.value,{stream:!chunk.done});const lines=buffer.split("\n");buffer=lines.pop()??"";if(buffer.length>4*1024*1024)throw Error("Слишком большой результат");
+ for(const line of lines){if(!line.trim())continue;const event=JSON.parse(line);
+ if(event.type==="error")throw Error(event.error);
+ if(event.type==="done")result=event.result as RoutePlan;
+ if(event.type==="progress"){const p=event.step;statuses.set(p.id,p.tool+" · "+p.status);byId("chatProgress").textContent=[...statuses.values()].join(" | ");chatPhase("tool");if(p.status!=="scheduled"){arrival(group("core"),p.status==="ok"?"reply":"error")}}
+ }if(chunk.done)break}if(!result)throw Error("План прерван");return result}finally{await reader.cancel().catch(()=>{})}
+}
 function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
  const dialog=byId<HTMLDialogElement>("routingConsent");
  byId("routingQuestion").textContent=text;
@@ -544,7 +568,7 @@ form.onsubmit=async e=>{
    leg:routeLeg,
    prepare:async requested=>{
     checkPreparation();chatStatus.textContent="Поиск: переписка, работа, документы…";
-    plan=await routingPost<RoutePlan>("plan",{text:request.text,request_id:request.request_id});
+    const steps=await previewChatPlan(request);checkPreparation();plan=await runChatPlan(request,steps);
     await refreshWorkspaceMap();
     chatStatus.textContent="Найдено источников: "+plan.hits.length+(plan.fts?" · FTS5":" · ограниченный поиск");
     checkPreparation();await retrieveAnimation(plan.hits);checkPreparation();
@@ -581,7 +605,7 @@ form.onsubmit=async e=>{
   if(editApproved)void refreshWorkspaceMap();
   chatStatus.textContent=(approved?"Cloud.ru":"Локальный ответ")+" · сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
  }catch(error){clearFlow();if(cancelPreparation){chatStatus.textContent="Подготовка отменена. Запрос не отправлен.";return}arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":(error instanceof Error?error.message:"Операция не завершена")+". Проверьте результат перед повтором.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";resizePrompt();resetChat(recovered.messages);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
- finally{chatPhase("idle");busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
+ finally{byId("chatProgress").textContent="";chatPhase("idle");busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
  sendButton.disabled=true;chatPrompt.disabled=true;
@@ -670,7 +694,7 @@ function updateToolState(){
  for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport","toolWeb","toolKnowledge","toolCognitive"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
-byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
+byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent","chatPlanDialog"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
 const chatResize=byId("chatResize"),chatFull=byId<HTMLButtonElement>("chatFull");
 let chatWidth=0,chatDrag=false;
 function setChatWidth(width:number){chatWidth=Math.round(Math.max(260,Math.min(innerWidth*.65,width)));chat.style.setProperty("--chat-width",chatWidth+"px");chatResize.setAttribute("aria-valuenow",String(chatWidth));requestFrame()}
@@ -681,7 +705,7 @@ chatResize.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="Arrow
 function setChatFull(on:boolean){document.body.classList.toggle("full-chat",on);chatFull.setAttribute("aria-pressed",String(on));chatFull.title=on?"Вернуть карту":"Развернуть чат";chatFull.setAttribute("aria-label",chatFull.title);requestFrame()}
 chatFull.onclick=()=>setChatFull(!document.body.classList.contains("full-chat"));
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.body.classList.contains("full-chat")&&!document.querySelector("dialog[open]"))setChatFull(false)});
-function resizePrompt(){chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px"}
+function resizePrompt(){chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px";const q=chatPrompt.value.toLowerCase(),h=byId("chatSuggestion");h.textContent=/сравн|excel|xlsx/.test(q)?"Таблицы: прикрепите файлы и укажите ключ: столбец":/новост|интернет|свеж/.test(q)?"Интернет: отдельное подтверждение":/статистик|график/.test(q)?"Статистика: 10 15 20":/отч[её]т|гсм|табел/.test(q)?"Отчёт: укажите месяц ГГГГ-ММ":""}
 chatPrompt.addEventListener("input",resizePrompt);
 chatPrompt.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!busy)form.requestSubmit(sendButton)}});
 async function copyText(text:string){
@@ -1027,7 +1051,7 @@ byId<HTMLFormElement>("calculatorForm").onsubmit=async e=>{
 byId("calculatorInsert").onclick=()=>{if(busy||selected>=0)return;const value=byId("calculatorResult").textContent??"";if(!/^-?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/i.test(value))return;chatPrompt.value=(chatPrompt.value+value).slice(0,1000);resizePrompt();byId<HTMLDialogElement>("calculatorDialog").close();chatPrompt.focus()};
 updateToolState();
 const full=byId("fullMap");
-function setFull(on:boolean){document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));syncChatIcons();requestFrame()}
+function setFull(on:boolean){if(on&&document.body.classList.contains("full-chat"))setChatFull(false);document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));syncChatIcons();requestFrame()}
 full.onclick=async()=>{
  const on=!document.body.classList.contains("full-map");setFull(on);
  if(on&&!document.fullscreenElement&&document.documentElement.requestFullscreen){try{await document.documentElement.requestFullscreen()}catch{/* map-only fallback */}}
