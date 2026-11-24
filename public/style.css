@@ -37,3 +37,11 @@ main{height:calc(100dvh - 58px);position:relative}
 .paused #messages p{animation:none}
 @media(max-width:720px){header{height:52px;padding:0 10px;gap:4px}.brand{font-size:11px;gap:5px;letter-spacing:.09em}.brand span{letter-spacing:.09em}.brand small{display:none}.status{font-size:8px;letter-spacing:0}.status #stats{display:none}main{height:calc(100dvh - 52px)}#chat{position:absolute;inset:0;width:100%;background:transparent;padding:24px 20px;z-index:2}main:has(#chat:not([hidden])) #stage{visibility:hidden}#panel{top:6px;right:10px;bottom:10px;width:min(300px,calc(100% - 20px))}}
 @media(prefers-reduced-motion:reduce){#messages p{animation:none!important}}
+
+/* Geometry 4.0 */
+.cluster-shape{fill:currentColor;fill-opacity:.025;stroke:currentColor;stroke-opacity:.27;stroke-width:1;cursor:pointer}.cluster-shape:hover{fill-opacity:.09;stroke-opacity:.65}
+.cluster-label{font:600 11px system-ui,sans-serif;letter-spacing:.035em;stroke-width:3px;stroke-linejoin:round;fill:currentColor}
+.core-inner{stroke:#79bfba;stroke-dasharray:1 5;stroke-opacity:.8}.core-jewel{fill:#b5f5e9;stroke:none}.core-title{letter-spacing:1.1px}
+#brain[data-lod=overview] .satellite-glyph,#brain[data-quality="0.25"] .satellite-glyph{display:none}
+#brain[data-quality="0.25"] .dot.hot,#brain[data-quality="0.5"] .dot.hot{filter:none;animation:none}
+.map-search{position:absolute;top:16px;left:18px;width:min(250px,65%);z-index:3}.map-search input{width:100%;background:#0d202bb8;border:0;border-radius:12px;padding:11px 14px;color:#d5e8ec;outline:none;font:12px system-ui,sans-serif;backdrop-filter:blur(12px)}.map-search input:focus-visible{outline:1px solid #78daca}.map-search small{font-size:9px;color:#8eacb8}#searchResults:not(:empty){background:#0b1c28f2;padding:5px;border-radius:12px;margin-top:4px;color:#a9c4ce;font-size:11px}#searchResults button{display:block;width:100%;background:transparent;border:0;text-align:left;padding:8px;font-size:11px}#searchResults button:hover{background:#ffffff0d}

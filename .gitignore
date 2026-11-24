@@ -7,3 +7,5 @@ runtime/
 
 data/*.db
 data/*.db-*
+
+public/geometry.js

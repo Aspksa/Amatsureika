@@ -24,7 +24,8 @@ jobs:
         if: runner.os == 'Linux'
         run: python launcher.py --check
       - run: npm test
-      - run: python -m py_compile server.py launcher.py
+      - run: node tests/geometry.mjs
+      - run: python -m py_compile server.py launcher.py design_store.py
       - run: python tests/smoke.py
       - name: Upload startup log
         if: always()

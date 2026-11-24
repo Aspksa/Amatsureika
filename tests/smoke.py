@@ -19,9 +19,19 @@ def session(data_dir, expected=None):
                     assert response.status == 200 and token in response.read(), path
             with urlopen(url + "api/design", timeout=10) as response:
                 settings = json.load(response)
+            camera = {"zoom": 2.5, "tx": 120, "ty": -32, "mode": "hex"}
             if expected is not None:
                 assert settings == expected, (settings, expected)
+                with urlopen(url + "api/camera", timeout=10) as response:
+                    assert json.load(response) == camera
                 return
+            with urlopen(Request(url + "api/camera", data=json.dumps(camera).encode(), headers={"Content-Type":"application/json"}), timeout=10) as response:
+                assert json.load(response) == camera
+            try:
+                urlopen(Request(url + "api/camera", data=json.dumps({**camera, "zoom": 0}).encode(), headers={"Content-Type":"application/json"}), timeout=10)
+                raise AssertionError("Invalid camera accepted")
+            except HTTPError as error:
+                assert error.code == 400
             settings.update(glow=17, depth=42, motion=0, textMotion=25, texture=12, speed=1.5)
             req = Request(url + "api/design", data=json.dumps(settings).encode(), headers={"Content-Type":"application/json"})
             with urlopen(req, timeout=10) as response:

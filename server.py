@@ -22,13 +22,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if urlsplit(self.path).path == "/api/design":
+        if urlsplit(self.path).path == "/api/camera":
+            self.send_json(self.store.load_camera())
+        elif urlsplit(self.path).path == "/api/design":
             self.send_json(self.store.load())
         else:
             super().do_GET()
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/api/design":
+        path = urlsplit(self.path).path
+        if path not in ("/api/design", "/api/camera"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -40,7 +43,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0 < size <= 4096:
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
-            self.send_json(self.store.save(value))
+            self.send_json(self.store.save_camera(value) if path == "/api/camera" else self.store.save(value))
         except (ValueError, TypeError, OverflowError):
             self.send_json({"error": "Invalid settings"}, 400)
 
