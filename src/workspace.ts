@@ -64,7 +64,7 @@ export function setupWorkspace(bind:(id:string,open:()=>void)=>void,run:<T>(id:"
 async function showRecord(recordId:number){
  try{const data=await intelligence<{record:RecordRow;related:RecordRow[];related_total:number;versions:{created:string;before:RecordRow|null;after:RecordRow}[];note:string}>({action:"record",id:recordId});const out=id("workOverview");out.replaceChildren(node("h3","Карточка #"+recordId),node("p",data.note));
  const pre=node("pre",JSON.stringify(data.record.fields,null,2));out.append(pre,node("h4","Связанные записи: "+data.related_total));
- for(const r of data.related){const b=button(sections[r.kind].title+" · #"+r.id+(r.archived?" · архив":""),()=>{kind=r.kind;edit(r);renderWork()});out.append(b)}
+ for(const r of data.related){const b=button(sections[r.kind].title+" · #"+r.id+(r.archived?" · архив":""),()=>{const original=rows.find(x=>x.id===r.id);if(!original)return;kind=original.kind;edit(original);renderWork()});out.append(b)}
  const details=node("details");details.append(node("summary","Изменения: "+data.versions.length));for(const v of data.versions)details.append(node("pre",v.created+"\n"+JSON.stringify(v.before?.fields??null)+" → "+JSON.stringify(v.after.fields)));out.append(details)
  }catch(e){workStatus.textContent=err(e)}
  }

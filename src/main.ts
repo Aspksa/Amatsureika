@@ -147,7 +147,7 @@ function select(i:number){
 function requestFrame(){if(!frame)frame=requestAnimationFrame(renderFrame)}
 function renderFrame(now:number){
  frame=0;
- if(lastFrame&&(moving||flight)){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
+ if(lastFrame&&(moving||flight||flowLegs.size)){const dt=now-lastFrame;if(dt>24){slowFrames++;fastFrames=0}else{fastFrames++;slowFrames=0}if(slowFrames>=8){quality=Math.max(.25,quality-.25);slowFrames=0}if(fastFrames>=40){quality=Math.min(1,quality+.25);fastFrames=0}}
  lastFrame=now;
  if(moving){const p=motionOff()?1:Math.min(1,(now-start)/700);transition=p*p*(3-2*p);moving=p<1;if(!moving){oldCenters=null;oldOrbit=null;oldSpatial=null;oldFilePoints=null;oldWorkPoints=null}}
  if(flight){const f=flight,p=motionOff()?1:Math.min(1,(now-f.begin)/650),e=p*p*(3-2*p);zoom=Math.exp(Math.log(f.fromZ)+(Math.log(f.z)-Math.log(f.fromZ))*e);tx=f.fromX+(f.x-f.fromX)*e;ty=f.fromY+(f.y-f.fromY)*e;if(p===1){flight=null;saveCamera()}}
@@ -532,6 +532,7 @@ async function streamRequest(body:object):Promise<Snapshot>{
  }finally{await reader.cancel().catch(()=>{});clearStreamPreview()}
 }
 async function retrieveAnimation(hits:SearchHit[]){
+ if(byId<HTMLInputElement>("cameraFollow").checked&&!motionOff()&&!document.hidden&&selected<0&&!document.body.classList.contains("full-chat")){const first=hits.find(h=>h.source==="memory"&&clusters.some(c=>c.id===h.id));if(first){const i=clusters.findIndex(c=>c.id===first.id),p=anchor(i),z=Math.min(1.8,Math.max(.35,zoom));animateCamera(z,-p.x*z*.7,-p.y*z*.7)}}
  const distinct=Array.from(new Map(hits.map(h=>[h.source+":"+h.id,h])).values());
  await Promise.all(distinct.map(async h=>{
   const locate=()=>h.source==="memory"?clusters.findIndex(c=>c.id===h.id):h.source==="work"?workspaceMap.records.findIndex(r=>r.id===h.id):workspaceMap.files.findIndex(f=>f.id===h.id);
@@ -926,10 +927,11 @@ byId("knowledgeGraph").onclick=()=>void knowledgeAction(async()=>{
 });
 byId("knowledgeStats").onclick=()=>void knowledgeAction(async()=>{const r=await knowledgeApi<{counts:{kind:string;state:string;n:number}[];stale:number;links:number;versions:number}>("stats");knowledgeOutput.replaceChildren();for(const row of r.counts)knowledgeText(knowledgeOutput,row.kind+" · "+row.state+" · "+row.n);knowledgeText(knowledgeOutput,"Устарело: "+r.stale+" · связи: "+r.links+" · ревизии: "+r.versions)});
 byId<HTMLFormElement>("knowledgeLinkForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(async()=>{const val=(id:string)=>byId<HTMLInputElement>(id).value;await knowledgeApi("link",{a:val("knowledgeA"),b:val("knowledgeB"),kind:val("knowledgeRelation")});await knowledgeSearch()})};
-type CognitiveAction="stats"|"column"|"compare"|"document"|"deduce"|"decisions"|"hypothesis"|"transfer"|"performance"|"draft"|"seasonality"|"profile"|"research_docs"|"convert"|"anomalies";
+type CognitiveAction="stats"|"column"|"compare"|"document"|"deduce"|"decisions"|"hypothesis"|"transfer"|"performance"|"draft"|"seasonality"|"profile"|"research_docs"|"convert"|"anomalies"|"counterfactual"|"capabilities";
 const cognitiveDialog=byId<HTMLDialogElement>("cognitiveDialog"),cognitiveSelect=byId<HTMLSelectElement>("cognitiveAction"),cognitiveInput=byId<HTMLTextAreaElement>("cognitiveInput"),cognitiveOutput=byId("cognitiveOutput");
 let cognitiveBusy=false;
 const cognitiveExamples:Record<CognitiveAction,object>={
+ counterfactual:{facts:[["Машина","состояние","неисправна"]],rules:[{if:[["Машина","состояние","неисправна"]],then:["Машина","решение","осмотр"]}],remove:[["Машина","состояние","неисправна"]],add:[["Машина","состояние","исправна"]],target:["Машина","решение","осмотр"]},capabilities:{},
  stats:{values:[10,12,15,14,18,21]},
  seasonality:{values:[10,20,12,22,14,24],period:2},profile:{file:1},research_docs:{files:[1,2]},convert:{file:1,format:"json"},anomalies:{},
  column:{file:1,column:"cost"},
@@ -943,6 +945,7 @@ const cognitiveExamples:Record<CognitiveAction,object>={
  draft:{title:"Служебная записка",body:"Текст черновика для проверки"}
 };
 const cognitiveHelp:Record<CognitiveAction,string>={
+ counterfactual:"Сравнение вывода при замене явно заданных предпосылок. Не причинное доказательство.",capabilities:"Реестр доступных инструментов и границы локального анализа.",
  stats:"Введите массив чисел по порядку наблюдений. График отражает только введённые значения.",
  seasonality:"Равномерный временной ряд; для сезонности минимум три заданных цикла.",profile:"Профиль первого листа CSV/XLSX: пропуски, уникальные и числовые значения.",research_docs:"ID 2–6 текстовых документов; общие слова и возможные расхождения полей.",convert:"Преобразование таблицы в CSV/JSON на локальном Диске.",anomalies:"Проверка существующих рабочих реестров без изменений.",
  column:"ID CSV/XLSX на локальном диске и точное название числового столбца.",
@@ -1109,7 +1112,7 @@ byId("toolCalculator").onclick=()=>{closeTools();byId<HTMLDialogElement>("calcul
 byId("calculatorClose").onclick=()=>byId<HTMLDialogElement>("calculatorDialog").close();
 byId<HTMLFormElement>("calculatorForm").onsubmit=async e=>{
  e.preventDefault();const output=byId("calculatorResult");
- try{const data=await routingPost<{result:string}>("calculate",{expression:byId<HTMLInputElement>("calculatorExpression").value});output.textContent=data.result}
+ try{const data=await routingPost<{result:string}>("calculate",{expression:byId<HTMLInputElement>("calculatorExpression").value,variables:JSON.parse(byId<HTMLTextAreaElement>("calculatorVariables").value||"{}")});output.textContent=data.result}
  catch(e){output.textContent=e instanceof Error?e.message:"Ошибка вычисления"}
 };
 byId("calculatorInsert").onclick=()=>{if(busy||selected>=0)return;const value=byId("calculatorResult").textContent??"";if(!/^-?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/i.test(value))return;chatPrompt.value=(chatPrompt.value+value).slice(0,1000);resizePrompt();byId<HTMLDialogElement>("calculatorDialog").close();chatPrompt.focus()};

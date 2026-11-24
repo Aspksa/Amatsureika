@@ -20,7 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 import zipfile
@@ -316,6 +316,13 @@ class Router:
             meta["tools"].append("document")
             meta["document_summary"]="\n".join(parts)[:3000]
         if advanced_answer is None and not attachment_ids:
+            garage_match=re.fullmatch(r"(?:обзор|сводка)\s+гаража(?:\s+за\s+(\d{4}-\d{2}))?[?.]?",q,re.I)
+            if garage_match:
+                data=self.workspace_intelligence.garage(garage_match[1] or date.today().strftime("%Y-%m"))
+                advanced_answer=f"Обзор гаража за {data['month']}: {data['liters']} л, {data['cost']} ₽, {data['hours']} ч. Замечаний: {data['anomalies']['total']}.\n"+data["note"]
+                meta["tools"].append("garage")
+                meta["table"]={"columns":["Автомобиль","Литры","Рубли","л/100 км (оценка)"],"rows":[[v["name"],v["liters"],v["cost"],v["liters_per_100km"] or "нет пробега"] for v in data["vehicles"][:30]],"total_rows":len(data["vehicles"])}
+                advanced_sources=[{"source":"work","id":v["id"],"title":v["name"]} for v in data["vehicles"][:8]]
             calc=re.fullmatch(r"(?:посчитай|вычисли|сколько будет)\s+(.+)",q,re.I)
             if calc and re.fullmatch(r"[0-9.,+*/() ×÷−-]+[?]?",calc[1]):
                 expression=calc[1].rstrip("?")
@@ -531,17 +538,26 @@ class Router:
 
 
 def calculate(value):
-    if not isinstance(value,dict) or set(value)!={"expression"}:
+    if not isinstance(value,dict) or set(value) not in ({"expression"},{"expression","variables"}):
         raise ValueError("Некорректное выражение")
     expr=value["expression"]
     if not isinstance(expr,str) or not expr.strip() or len(expr)>160:
         raise ValueError("Введите выражение до 160 символов")
     expr=expr.strip().replace("×","*").replace("÷","/").replace("−","-").replace(",",".")
-    if not re.fullmatch(r"[0-9.+*/() \t-]+",expr):
-        raise ValueError("Только числа, + − × ÷ и скобки")
+    variables=value.get("variables",{})
+    if not isinstance(variables,dict) or len(variables)>20:raise ValueError("До 20 переменных")
+    clean={}
+    for key,v in variables.items():
+        if not isinstance(key,str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,19}",key) or type(v) not in (str,int,float) or len(str(v))>40:raise ValueError("Некорректная переменная")
+        try:n=Decimal(str(v))
+        except DecimalException:raise ValueError("Некорректное число") from None
+        if not n.is_finite() or abs(n)>Decimal("1e50"):raise ValueError("Число слишком большое")
+        clean[key]=n
+    if not re.fullmatch(r"[A-Za-z0-9_.+*/() \t-]+",expr):raise ValueError("Только числа, переменные, + − × ÷ и скобки")
     def walk(node):
-        if isinstance(node,ast.Constant) and type(node.value) in (int,float):
+        if isinstance(node,ast.Constant) and type(node.value) in (int,float) and re.fullmatch(r"[0-9.]+",ast.get_source_segment(expr,node) or ""):
             result=Decimal(ast.get_source_segment(expr,node))
+        elif isinstance(node,ast.Name) and node.id in clean:result=clean[node.id]
         elif isinstance(node,ast.UnaryOp) and type(node.op) in (ast.UAdd,ast.USub):
             result=walk(node.operand)
             if isinstance(node.op,ast.USub):result=-result
