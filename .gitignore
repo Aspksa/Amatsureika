@@ -4,3 +4,6 @@ __pycache__/
 
 logs/
 runtime/
+
+data/*.db
+data/*.db-*
