@@ -620,7 +620,7 @@ function updateToolState(){
  const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
  byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
  byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
- for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport","toolWeb"])byId<HTMLButtonElement>(id).disabled=busy;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport","toolWeb","toolKnowledge"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
 byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
@@ -741,6 +741,45 @@ byId("webClose").onclick=()=>webDialog.close();
 byId<HTMLFormElement>("webForm").onsubmit=e=>{e.preventDefault();const action=webActionSelect.value,input=webInput.value.trim();if(action==="watch"&&!confirm("Разрешить автоматическую проверку этого публичного сайта раз в час при работающем сервере?"))return;void webRun(action,input)};
 byId("webCopy").onclick=()=>void copyText(webOutput.innerText);
 byId("webToChat").onclick=()=>{if(busy||selected>=0)return;const excerpt=webOutput.innerText.trim();if(!excerpt)return;chatPrompt.value=("Проанализируй эти интернет-выдержки (не проверенные факты):\n"+excerpt).slice(0,1000);resizePrompt();webDialog.close();chatPrompt.focus()};
+type KnowledgeItem={id:string;kind:string;subject:string;predicate:string;value:string;context:string;state:string;confidence:number;expires:string;updated:string;stale?:boolean;semantic_score?:number;sources?:{source_type:string;source_id:string}[];links?:{a:string;b:string;kind:string;strength:number}[];versions?:number};
+const knowledgeDialog=byId<HTMLDialogElement>("knowledgeDialog"),knowledgeOutput=byId("knowledgeOutput"),knowledgeQuery=byId<HTMLInputElement>("knowledgeQuery");
+let knowledgeBusy=false;
+async function knowledgeApi<T>(action:string,value:object={}):Promise<T>{return agentApi<T>("knowledge",{action,...value})}
+async function knowledgeAction(action:()=>Promise<void>){if(knowledgeBusy)return;knowledgeBusy=true;try{await action()}catch(e){knowledgeOutput.textContent=e instanceof Error?e.message:"Ошибка памяти"}finally{knowledgeBusy=false}}
+function knowledgeText(root:HTMLElement,value:string){const p=document.createElement("p");p.textContent=value;root.append(p)}
+function showKnowledge(items:KnowledgeItem[]){
+ knowledgeOutput.replaceChildren();if(!items.length)knowledgeText(knowledgeOutput,"Нет совпадений");
+ for(const item of items){
+  const card=document.createElement("article");card.className="knowledge-entry";
+  knowledgeText(card,item.subject+" · "+item.predicate+": "+item.value);
+  knowledgeText(card,item.kind+" · "+item.state+" · уверенность "+Math.round(item.confidence*100)+"%"+(item.stale?" · устарело":"")+" · "+item.updated.slice(0,10));
+  if(item.semantic_score!==undefined)knowledgeText(card,"Векторное сходство: "+item.semantic_score.toFixed(3));
+  if(item.sources)knowledgeText(card,"Источники: "+item.sources.map(s=>s.source_type+" #"+s.source_id).join(", "));
+  if(item.links?.length)knowledgeText(card,"Связи: "+item.links.map(x=>x.kind+" "+(x.a===item.id?x.b:x.a)+" ×"+x.strength).join("; "));
+  knowledgeText(card,"ID: "+item.id);
+  const actions=document.createElement("div");actions.className="workspace-actions";
+  function button(label:string,fn:()=>void){const b=document.createElement("button");b.type="button";b.textContent=label;b.onclick=fn;actions.append(b)}
+  button("Подтвердить",()=>void knowledgeAction(async()=>{if(!confirm("Подтвердить это знание как проверенное вами?"))return;await knowledgeApi("review",{id:item.id,state:"confirmed",confidence:1,confirm:true});await knowledgeSearch()}));
+  button("Отклонить",()=>void knowledgeAction(async()=>{if(!confirm("Исключить это знание из поиска?"))return;await knowledgeApi("review",{id:item.id,state:"rejected",confidence:0,confirm:true});await knowledgeSearch()}));
+  button("История",()=>void knowledgeAction(async()=>{const h=await knowledgeApi<{items:{created:string;snapshot:KnowledgeItem}[]}>("history",{id:item.id});knowledgeOutput.replaceChildren();for(const v of h.items)knowledgeText(knowledgeOutput,v.created+" · "+v.snapshot.state+" · "+v.snapshot.confidence);if(!h.items.length)knowledgeText(knowledgeOutput,"Нет изменений")}));
+  if(item.state==="confirmed")button("Embeddings",()=>void knowledgeAction(async()=>{
+   if(localOnly)throw Error("Отключите локальный режим");const p=await knowledgeApi<{id:string;text:string;model:string;cached:boolean}>("embedding_preview",{id:item.id});
+   if(p.cached){knowledgeText(card,"Вектор уже сохранён");return}
+   if(!confirm("Платный запрос Cloud.ru · "+p.model+"\nБудет отправлено точно:\n"+p.text))return;
+   await knowledgeApi("embed",{id:item.id,text:p.text,confirm:true});knowledgeText(card,"Вектор сохранён в SQLite")
+  }));
+  card.append(actions);knowledgeOutput.append(card);
+ }
+}
+async function knowledgeSearch(){const r=await knowledgeApi<{items:KnowledgeItem[]}>("search",{query:knowledgeQuery.value});showKnowledge(r.items)}
+byId("toolKnowledge").onclick=()=>{closeTools();knowledgeDialog.showModal();void knowledgeAction(knowledgeSearch)};
+byId("knowledgeClose").onclick=()=>knowledgeDialog.close();
+byId<HTMLFormElement>("knowledgeSearchForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(knowledgeSearch)};
+byId("knowledgeSemantic").onclick=()=>void knowledgeAction(async()=>{const q=knowledgeQuery.value.trim();if(!q)throw Error("Введите запрос");if(localOnly)throw Error("Отключите локальный режим");if(!confirm("Платный запрос Qwen embeddings. Будет отправлено:\n"+q))return;showKnowledge((await knowledgeApi<{items:KnowledgeItem[]}>("semantic",{query:q,confirm:true})).items)});
+byId<HTMLFormElement>("knowledgeAddForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(async()=>{const value=(id:string)=>byId<HTMLInputElement>(id).value;await knowledgeApi("add",{kind:value("knowledgeKind"),subject:value("knowledgeSubject"),predicate:value("knowledgePredicate"),value:value("knowledgeValue"),context:value("knowledgeContext"),expires:value("knowledgeExpires")});knowledgeQuery.value=value("knowledgeSubject");await knowledgeSearch()})};
+byId("knowledgeConsolidate").onclick=()=>void knowledgeAction(async()=>{await knowledgeApi("consolidate");await knowledgeSearch()});
+byId("knowledgeStats").onclick=()=>void knowledgeAction(async()=>{const r=await knowledgeApi<{counts:{kind:string;state:string;n:number}[];stale:number;links:number;versions:number}>("stats");knowledgeOutput.replaceChildren();for(const row of r.counts)knowledgeText(knowledgeOutput,row.kind+" · "+row.state+" · "+row.n);knowledgeText(knowledgeOutput,"Устарело: "+r.stale+" · связи: "+r.links+" · ревизии: "+r.versions)});
+byId<HTMLFormElement>("knowledgeLinkForm").onsubmit=e=>{e.preventDefault();void knowledgeAction(async()=>{const val=(id:string)=>byId<HTMLInputElement>(id).value;await knowledgeApi("link",{a:val("knowledgeA"),b:val("knowledgeB"),kind:val("knowledgeRelation")});await knowledgeSearch()})};
 type ImportPlan={token:string;kind:string;title:string;count:number;rows:Record<string,string|number|null>[]};
 const importDialog=byId<HTMLDialogElement>("importDialog"),importFile=byId<HTMLSelectElement>("importFile"),importKind=byId<HTMLSelectElement>("importKind"),importOutput=byId("importOutput"),importCommit=byId<HTMLButtonElement>("importCommit");
 let importPlan:ImportPlan|null=null,importBusy=false;

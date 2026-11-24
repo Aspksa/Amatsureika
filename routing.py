@@ -5,6 +5,7 @@ from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_te
 from agent_engine import Agent, parse as agent_parse
 from work_import import Importer
 from web_research import WebResearch
+from knowledge_store import Knowledge
 from evidence import rank as sparse_rank, evidence_links, missing_terms
 import ast
 from decimal import Decimal, localcontext, DecimalException
@@ -74,6 +75,7 @@ class Router:
         self.agent=Agent(chat,workspace,self.tools,self.advanced)
         self.importer=Importer(workspace)
         self.web=WebResearch(chat,workspace)
+        self.knowledge=Knowledge(chat,cloud)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True
@@ -285,6 +287,8 @@ class Router:
             if len("\n".join(context_parts+[part]))>CONTEXT_LIMIT: break
             context_parts.append(part)
         if not sufficient and not mutation:
+            for part in self.knowledge.context(question):
+                if len("\n".join(context_parts+[part]))<=CONTEXT_LIMIT:context_parts.append(part)
             with closing(self.chat.connect()) as db:
                 recent=db.execute("SELECT role,text FROM chat_messages WHERE request_id!=? ORDER BY id DESC LIMIT 4",(value["request_id"],)).fetchall()[::-1]
             for r in recent:

@@ -264,3 +264,5 @@ body.full-map #panel{display:none!important}
 #importDialog{width:min(820px,calc(100% - 28px))}#importOutput{margin:12px 0;overflow-wrap:anywhere}
 
 #webDialog{width:min(760px,calc(100% - 28px))}#webOutput{white-space:pre-wrap;overflow-wrap:anywhere;max-height:50dvh;overflow:auto;margin:10px 0}#webOutput a{display:block;color:#91d7cc;margin-top:10px}#webOutput p{font-size:12px;color:#adbec8;margin:5px 0 10px}#webInputLabel[hidden]{display:none}
+
+#knowledgeDialog{width:min(850px,calc(100% - 28px))}#knowledgeOutput{overflow:auto;max-height:45dvh;overflow-wrap:anywhere}.knowledge-entry{border-bottom:1px solid #29434f;padding:10px 0}.knowledge-entry p{margin:5px 0;white-space:pre-wrap;font-size:12px}
