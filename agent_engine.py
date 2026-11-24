@@ -150,6 +150,15 @@ class Agent:
             return {**answer,"status":"ok"}
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as e:
             self.log(k,"error",begin,type(e).__name__)
+            # Only equivalent safe read-only fallback for inventory. Never retry
+            # a paid request, mutation or pretend a count is a full report.
+            if k in ("staff","vehicles","cards","files"):
+                try:
+                    snapshot=self.workspace.map_summary()
+                    n=len(snapshot["files"]) if k=="files" else snapshot["work"].get(k,0)
+                    self.log(k,"fallback",begin,"Только количество")
+                    return {"text":"Основной отчёт недоступен. Резервный инструмент: активных записей "+str(n)+". Детализация отсутствует.","sources":[],"status":"partial"}
+                except (ValueError,RuntimeError,OSError,sqlite3.Error):pass
             return {"text":"Ошибка инструмента: "+str(e),"sources":[],"status":"error"}
 
     def run(self,steps):

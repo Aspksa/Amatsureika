@@ -164,9 +164,14 @@ def parse_sse(response):
             if body=="[DONE]":
                 finished=True;break
             event=json.loads(body)
+            if not isinstance(event,dict):raise CloudError("Некорректный SSE")
             if "error" in event:raise CloudError("Ошибка модели в потоке")
-            for choice in event.get("choices",[]):
-                if choice.get("index",0)!=0:continue
-                part=choice.get("delta",{}).get("content")
+            choices=event.get("choices",[])
+            if not isinstance(choices,list):raise CloudError("Некорректный SSE")
+            for choice in choices:
+                if not isinstance(choice,dict) or choice.get("index",0)!=0:continue
+                delta=choice.get("delta",{})
+                if not isinstance(delta,dict):continue
+                part=delta.get("content")
                 if isinstance(part,str) and part:yield part
     if not finished:raise CloudError("Поток завершился без подтверждения [DONE]")

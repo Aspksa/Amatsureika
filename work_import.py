@@ -60,7 +60,9 @@ def sheet_rows(path,title):
                     for ch in m[1]:col=col*26+ord(ch)-64
                     if col>30:raise ValueError("Лимит 30 столбцов")
                     typ=cell.get("t","n");v=cell.findtext(NS+"v","")
-                    if typ=="s":v=shared[int(v)]
+                    if typ=="s":
+                        if not re.fullmatch(r"\d+",v):raise ValueError("Неверная общая строка")
+                        v=shared[int(v)]
                     elif typ=="inlineStr":v="".join(t.text or "" for t in cell.iter(NS+"t"))
                     elif typ not in ("n","str"):raise ValueError("Недопустимый тип ячейки")
                     cells[col-1]=v

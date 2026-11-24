@@ -433,7 +433,7 @@ async function remember(s:Snapshot){
 }
 type SearchHit={source:"memory"|"work"|"file";id:number;title:string;text:string;updated:string;age_days:number;coverage:number};
 type EditPreview={id:number;kind:string;field:string;label:string;before:string|number;after:string|number;version:string};
-type RoutePlan={mutation?:EditPreview|null;token:string;hits:SearchHit[];intent:string;sufficient:boolean;conflicts:string[];context:string;local:string;fts:boolean};
+type RoutePlan={missing?:string[];mutation?:EditPreview|null;token:string;hits:SearchHit[];intent:string;sufficient:boolean;conflicts:string[];context:string;local:string;fts:boolean};
 async function routingPost<T>(path:string,body:object):Promise<T>{
  const r=await fetch("/api/routing/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
  const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка поиска");return data as T;
@@ -481,7 +481,7 @@ function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
  const dialog=byId<HTMLDialogElement>("routingConsent");
  byId("routingQuestion").textContent=text;
  byId("routingContext").textContent=plan.context||"Нет найденных выдержек — будет отправлен только вопрос.";
- byId("routingWarnings").textContent=plan.conflicts.join("; ");
+ byId("routingWarnings").textContent=[...plan.conflicts,...(plan.missing?.length?["Не подтверждено точными совпадениями: "+plan.missing.join(", ")]:[])].join("; ");
  return new Promise(resolve=>{
   dialog.returnValue="local";
   dialog.addEventListener("close",()=>resolve(dialog.returnValue==="cloud"),{once:true});
