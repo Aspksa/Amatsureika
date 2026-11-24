@@ -236,3 +236,12 @@ body.full-map #panel{display:none!important}
 #reportOutput{padding:12px 0;overflow-wrap:anywhere}
 #reportOutput p{margin:6px 0;color:#a7c8c9}
 #reportOutput small{display:block;margin:10px 0;color:#89a3af}
+
+#workflowDialog,#editConsent{width:min(560px,calc(100% - 28px))}
+.workflow-form{display:flex;flex-direction:column;gap:12px;margin:16px 0}
+.workflow-form label{display:flex;flex-direction:column;gap:6px;color:#a7c8c9}
+.workflow-form [hidden]{display:none!important}
+#workflowCompareFields,#workflowEditFields{display:grid;gap:10px}
+.edit-diff{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.edit-diff>div{padding:12px;border:1px solid #29434f;border-radius:8px;min-width:0}
+.edit-diff p{white-space:pre-wrap;overflow-wrap:anywhere;color:#c6e2df}
