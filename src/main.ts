@@ -73,16 +73,7 @@ function renderFrame(now:number){
  zoom=clamp(zoom,.025,64,fitZoom());tx=clamp(tx,-1e6,1e6);ty=clamp(ty,-1e6,1e6);
  world.setAttribute("transform",`translate(${tx} ${ty}) scale(${zoom})`);byId("reset").textContent=Math.round(zoom*100)+"%";
  const level=zoom<.45?"overview":zoom<1.6?"normal":zoom<5?"near":"detail";svg.dataset.lod=level;svg.dataset.quality=String(quality);
- const stride=items.length<2500?1:level==="overview"?Math.max(2,Math.ceil(4/quality)):Math.ceil(1/quality);
- const fragment=document.createDocumentFragment();
- const view=svg.viewBox.baseVal, margin=30;
- for(const it of items){
-  if(!valid(it.now)){transform(it,position(it))}
-  const x=it.now.x*zoom+tx,y=it.now.y*zoom+ty;
-  const visible=x>=view.x-margin&&x<=view.x+view.width+margin&&y>=view.y-margin&&y<=view.y+view.height+margin&&(it.outer||it.cluster===selected||it.index%stride===0);
-  if(visible){it.e.setAttribute("transform",`translate(${it.now.x.toFixed(2)} ${it.now.y.toFixed(2)})`);if(!it.e.isConnected)fragment.append(it.e);it.e.classList.toggle("fine-dot",!it.outer&&level==="detail")}else if(it.e.parentNode===nodes)it.e.remove();
- }
- nodes.append(fragment);
+ renderVisible(level);
  updatePulse(now);
  if(moving||flight||pulse||pulseQueue.length){requestFrame()}else lastFrame=0;
 }
