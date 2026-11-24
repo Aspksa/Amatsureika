@@ -75,3 +75,17 @@ for(const count of [1,100,200,2000,20000]){
  assert(a.centers.every(p=>valid(p)&&p.y<0));assert.deepEqual(a.centers,b.centers.slice(0,count));
  assert.equal(collisions(a.centers.map(p=>({p,r:8}))),0);
 }
+
+const {functionalOrbit,documentPoint}=await import("../public/geometry.js");
+for(const mode of ["radial","compact","hex"])for(const n of [0,1,50,2000,20000]){
+ const a=directedBlockLayout(n,mode),b=directedBlockLayout(n+1,mode);
+ assert.deepEqual(a.centers,b.centers.slice(0,n));
+ assert(a.centers.every(p=>valid(p)&&Math.hypot(p.x,p.y)>=170));
+ assert.equal(collisions(a.centers.map(p=>({p,r:12}))),0);
+ const icons=functionalOrbit(80,a.outer);
+ assert.equal(collisions(icons.map(p=>({p,r:19}))),0);
+ assert(icons.every(p=>Math.hypot(p.x,p.y)>a.outer));
+ const docs=Array.from({length:500},(_,i)=>({p:documentPoint(i,a.edge),r:10}));
+ assert.equal(collisions([...a.centers.map(p=>({p,r:12})),...docs]),0);
+}
+console.log("Orbit V2 stable radial/circular/hex layouts, icon clearance and file growth passed");

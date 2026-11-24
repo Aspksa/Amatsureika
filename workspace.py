@@ -223,6 +223,19 @@ class Workspace:
             target.unlink(missing_ok=True)
             raise
 
+    def map_summary(self):
+        with closing(self.connect()) as db:
+            db.execute("BEGIN")
+            rows=db.execute("""
+                WITH RECURSIVE live(id,kind,name,size) AS (
+                    SELECT id,kind,name,size FROM disk_entries WHERE parent IS NULL AND trashed=0
+                    UNION ALL
+                    SELECT e.id,e.kind,e.name,e.size FROM disk_entries e JOIN live p ON e.parent=p.id WHERE e.trashed=0
+                ) SELECT id,name,size FROM live WHERE kind='file' ORDER BY id
+            """).fetchall()
+            work=db.execute("SELECT kind,COUNT(*) AS count FROM work_records WHERE archived=0 GROUP BY kind").fetchall()
+            return {"files":[dict(r) for r in rows],"work":{r["kind"]:r["count"] for r in work}}
+
     def download(self,rid):
         with closing(self.connect()) as db:
             r=self.entry(db,rid)

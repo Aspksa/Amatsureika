@@ -27,6 +27,8 @@ with tempfile.TemporaryDirectory() as d:
     folder=w.disk_action({"action":"folder","parent":None,"name":"Договоры"})["id"]
     file=w.upload(folder,"договор.txt",io.BytesIO(b"hello"),5)["id"]
     assert w.download(file)[0].read_bytes()==b"hello"
+    assert w.map_summary()["files"]==[{"id":file,"name":"договор.txt","size":5}]
+    assert w.map_summary()["work"]["fuel"]==1
     fails(lambda:w.upload(folder,"../secret",io.BytesIO(b"x"),1))
     fails(lambda:w.upload(folder,"ДОГОВОР.TXT",io.BytesIO(b"x"),1))
     fails(lambda:w.upload(folder,"broken.txt",io.BytesIO(b"x"),2))
@@ -35,6 +37,8 @@ with tempfile.TemporaryDirectory() as d:
     w.disk_action({"action":"trash","id":folder})
     assert not w.disk()["entries"] and w.disk(trash=True)["entries"][0]["id"]==folder
     fails(lambda:w.download(file))
+    assert not w.map_summary()["files"]
     w.disk_action({"action":"restore","id":folder})
     assert Workspace(p).download(file)[1]=="новый.txt"
+    assert w.map_summary()["files"][0]["id"]==file
 print("Work registers, references, validation, persistent disk, trash and upload safety passed")
