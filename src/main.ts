@@ -405,7 +405,8 @@ async function remember(s:Snapshot){
  }));
 }
 type SearchHit={source:"memory"|"work"|"file";id:number;title:string;text:string;updated:string;age_days:number;coverage:number};
-type RoutePlan={token:string;hits:SearchHit[];intent:string;sufficient:boolean;conflicts:string[];context:string;local:string;fts:boolean};
+type EditPreview={id:number;kind:string;field:string;label:string;before:string|number;after:string|number;version:string};
+type RoutePlan={mutation?:EditPreview|null;token:string;hits:SearchHit[];intent:string;sufficient:boolean;conflicts:string[];context:string;local:string;fts:boolean};
 async function routingPost<T>(path:string,body:object):Promise<T>{
  const r=await fetch("/api/routing/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
  const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка поиска");return data as T;
@@ -435,12 +436,18 @@ function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
   dialog.showModal();
  });
 }
+function approveEdit(m:EditPreview):Promise<boolean>{
+ const dialog=byId<HTMLDialogElement>("editConsent");
+ byId("editRecord").textContent="Запись #"+m.id+" · "+m.label;
+ byId("editBefore").textContent=String(m.before);byId("editAfter").textContent=String(m.after);
+ return new Promise(resolve=>{dialog.returnValue="cancel";dialog.addEventListener("close",()=>resolve(dialog.returnValue==="apply"),{once:true});dialog.showModal()});
+}
 form.onsubmit=async e=>{
  e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||!ready||selected>=0)return;
  const paid=cloudAvailable&&!localOnly;
  busy=true;preparing=true;cancelPreparation=false;updateToolState();sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Поиск в локальной памяти…";
  if(!pending||pending.text!==raw)pending={text:raw,request_id:crypto.randomUUID()};
- const request=pending;let plan:RoutePlan|undefined,approved=false;
+ const request=pending;let plan:RoutePlan|undefined,approved=false,editApproved=false;
  try{
   await runQuietFlow<Snapshot>(paid,{
    leg:routeLeg,
@@ -450,7 +457,8 @@ form.onsubmit=async e=>{
     await refreshWorkspaceMap();
     chatStatus.textContent="Найдено источников: "+plan.hits.length+(plan.fts?" · FTS5":" · ограниченный поиск");
     checkPreparation();await retrieveAnimation(plan.hits);checkPreparation();
-    approved=!!(requested&&cloudAvailable&&!localOnly&&!plan.sufficient&&await approveCloud(request.text,plan));
+    if(plan.mutation)editApproved=await approveEdit(plan.mutation);
+    else approved=!!(requested&&cloudAvailable&&!localOnly&&!plan.sufficient&&await approveCloud(request.text,plan));
     checkPreparation();preparing=false;updateToolState();
     chatStatus.textContent=approved?"Cloud.ru: отправка подтверждена…":plan.sufficient?"Локальный ответ…":"Локальные результаты · без Cloud.ru";
     return approved;
@@ -458,7 +466,7 @@ form.onsubmit=async e=>{
    waiting:active=>{group("cloudIcon").classList.toggle("cloud-waiting",active);if(active)chatStatus.textContent="Cloud.ru: ожидание ответа…"},
    send:async()=>{
     if(!plan)throw Error("Нет плана поиска");
-    return routingPost<Snapshot>("execute",{text:request.text,request_id:request.request_id,token:plan.token,cloud:approved});
+    return routingPost<Snapshot>("execute",{text:request.text,request_id:request.request_id,token:plan.token,cloud:approved,approve_edit:editApproved});
    },
    committed:s=>{
     const previousCount=clusters.length;syncMap(s.clusters);pending=null;chatPrompt.value="";resizePrompt();
@@ -470,8 +478,9 @@ form.onsubmit=async e=>{
    deliver:s=>{if(selected<0)s.messages.filter(m=>m.role==="assistant").forEach(appendMessage)},
    remember
   });
+  if(editApproved)void refreshWorkspaceMap();
   chatStatus.textContent=(approved?"Cloud.ru":"Локальный ответ")+" · сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
- }catch(error){clearFlow();if(cancelPreparation){chatStatus.textContent="Подготовка отменена. Запрос не отправлен.";return}arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":"Связь прервана. Повторите отправку — дубликата не будет.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";resizePrompt();messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
+ }catch(error){clearFlow();if(cancelPreparation){chatStatus.textContent="Подготовка отменена. Запрос не отправлен.";return}arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":(error instanceof Error?error.message:"Операция не завершена")+". Проверьте результат перед повтором.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";resizePrompt();messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
  finally{busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
@@ -558,10 +567,10 @@ function updateToolState(){
  const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
  byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
  byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
- for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports"])byId<HTMLButtonElement>(id).disabled=busy;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
-byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();byId<HTMLDialogElement>("routingConsent").close("local");chatStatus.textContent="Отмена подготовки…"};
+byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
 function resizePrompt(){chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px"}
 chatPrompt.addEventListener("input",resizePrompt);
 chatPrompt.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!busy)form.requestSubmit(sendButton)}});
@@ -600,6 +609,38 @@ byId<HTMLFormElement>("chatSearchForm").onsubmit=async e=>{
    card.append(title,body,button);results.append(card);
   }
  }catch(e){if(run===searchRun)results.textContent=e instanceof Error?e.message:"Ошибка поиска"}
+};
+const workflowDialog=byId<HTMLDialogElement>("workflowDialog"),workflowKind=byId<HTMLSelectElement>("workflowKind"),workflowMonth=byId<HTMLInputElement>("workflowMonth"),workflowA=byId<HTMLSelectElement>("workflowA"),workflowB=byId<HTMLSelectElement>("workflowB");
+function workflowFields(){
+ const compare=workflowKind.value==="compare",edit=workflowKind.value==="edit",bundle=workflowKind.value==="bundle";
+ byId("workflowMonthLabel").hidden=!bundle;workflowMonth.required=bundle;
+ byId("workflowCompareFields").hidden=!compare;workflowA.required=compare;workflowB.required=compare;
+ byId("workflowEditFields").hidden=!edit;
+ for(const id of ["workflowRecord","workflowField","workflowValue"])byId<HTMLInputElement>(id).required=edit;
+}
+workflowKind.onchange=workflowFields;
+byId("toolWorkflow").onclick=async()=>{
+ closeTools();if(busy)return;
+ const d=new Date();workflowMonth.value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+ workflowFields();byId("workflowStatus").textContent="";workflowDialog.showModal();
+ await refreshWorkspaceMap();if(!workflowDialog.open)return;
+ for(const select of [workflowA,workflowB]){select.replaceChildren();const empty=document.createElement("option");empty.value="";empty.textContent="Выберите файл";select.append(empty);for(const f of workspaceMap.files){const o=document.createElement("option");o.value=String(f.id);o.textContent="#"+f.id+" · "+f.name;select.append(o)}}
+};
+byId("workflowClose").onclick=()=>workflowDialog.close();
+byId<HTMLFormElement>("workflowForm").onsubmit=e=>{
+ e.preventDefault();if(busy)return;let command="";
+ if(workflowKind.value==="bundle")command="Комплексный отчёт за "+workflowMonth.value;
+ else if(workflowKind.value==="anomalies")command="Проверь аномалии";
+ else if(workflowKind.value==="compare"){
+  if(!workflowA.value||!workflowB.value||workflowA.value===workflowB.value){byId("workflowStatus").textContent="Выберите два разных документа";return}
+  command="Сравни документы #"+workflowA.value+" и #"+workflowB.value;
+ }else{
+  const id=byId<HTMLInputElement>("workflowRecord").value,field=byId<HTMLSelectElement>("workflowField").value,value=byId<HTMLInputElement>("workflowValue").value.trim();
+  if(!/^[1-9][0-9]{0,11}$/.test(id)||!value){byId("workflowStatus").textContent="Укажите ID записи и значение";return}
+  command="Измени запись #"+id+" поле "+field+": "+value;
+ }
+ if(selected>=0)select(selected);
+ chatPrompt.value=command;resizePrompt();workflowDialog.close();chatPrompt.focus();
 };
 type ReportTool={id:string;title:string;monthly:boolean};
 type LocalReport={tool:string;title:string;month:string;columns:string[];rows:string[][];total_rows:number;summary:string[];sources:{source:string;id:number;title:string}[];generated:string};

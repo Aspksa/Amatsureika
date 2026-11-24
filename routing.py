@@ -164,7 +164,7 @@ class Router:
             offsets={};total=0
             for p in pages: offsets[p["id"]]=total;total+=p["count"]
             for r in chatrows:
-                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite")): continue
+                if r["role"]=="assistant" and r["text"].startswith(("Сообщение сохранено","Локальный поиск","Найдено в локальной памяти","Недостаточно данных","Локальный подсчёт","Локальный отчёт SQLite","Комплексный локальный отчёт","Локальная проверка аномалий","Сравнение извлечённого текста","Изменение сохранено локально","Изменение уже сохранено","Изменение не выполнено")): continue
                 block=(offsets[r["cluster_id"]]+r["position"]-1)//500+1
                 candidates.append(("memory",block,"Сообщение #"+str(r["id"])+" ("+r["role"]+")",r["text"],r["created_at"],r["id"]))
         hits=[]
