@@ -438,6 +438,31 @@ async function routingPost<T>(path:string,body:object):Promise<T>{
  const r=await fetch("/api/routing/"+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
  const data=await r.json();if(!r.ok)throw Error(data.error||"Ошибка поиска");return data as T;
 }
+let streamingPreview:HTMLDivElement|null=null;
+function clearStreamPreview(){streamingPreview?.remove();streamingPreview=null}
+async function streamRequest(body:object):Promise<Snapshot>{
+ const r=await fetch("/api/routing/stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+ if(!r.ok||!r.body)throw Error("Поток недоступен");
+ const reader=r.body.getReader(),decoder=new TextDecoder();let buffer="",answer="",done:Snapshot|undefined;
+ try{
+  while(true){
+   const chunk=await reader.read();buffer+=decoder.decode(chunk.value,{stream:!chunk.done});
+   const lines=buffer.split("\n");buffer=lines.pop()??"";
+   if(buffer.length>4*1024*1024)throw Error("Слишком большая строка потока");
+   for(const line of lines){if(!line.trim())continue;const event=JSON.parse(line);
+    if(event.type==="error")throw Error(event.error);
+    if(event.type==="delta"&&typeof event.text==="string"){
+     answer+=event.text;if(answer.length>100000)throw Error("Слишком большой ответ");
+     if(selected<0){if(!streamingPreview){streamingPreview=document.createElement("div");streamingPreview.className="stream-preview";messages.append(streamingPreview)}
+      streamingPreview.textContent=answer;messages.scrollTop=messages.scrollHeight;}
+    }else if(event.type==="done")done=event.result as Snapshot;
+   }
+   if(chunk.done)break;
+  }
+  if(!done)throw Error("Поток оборвался до сохранения");
+  return done;
+ }finally{await reader.cancel().catch(()=>{});clearStreamPreview()}
+}
 async function retrieveAnimation(hits:SearchHit[]){
  const distinct=Array.from(new Map(hits.map(h=>[h.source+":"+h.id,h])).values());
  await Promise.all(distinct.map(async h=>{
@@ -493,7 +518,8 @@ form.onsubmit=async e=>{
    waiting:active=>{group("cloudIcon").classList.toggle("cloud-waiting",active);if(active)chatStatus.textContent="Cloud.ru: ожидание ответа…"},
    send:async()=>{
     if(!plan)throw Error("Нет плана поиска");
-    return routingPost<Snapshot>("execute",{text:request.text,request_id:request.request_id,token:plan.token,cloud:approved,approve_edit:editApproved});
+    const body={text:request.text,request_id:request.request_id,token:plan.token,cloud:approved,approve_edit:editApproved};
+    return approved?streamRequest(body):routingPost<Snapshot>("execute",body);
    },
    committed:s=>{
     const previousCount=clusters.length;syncMap(s.clusters);pending=null;chatPrompt.value="";resizePrompt();

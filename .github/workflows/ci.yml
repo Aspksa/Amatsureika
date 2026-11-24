@@ -37,6 +37,7 @@ jobs:
       - run: python tests/advanced_tools_smoke.py
       - run: python tests/agent_engine_smoke.py
       - run: python tests/report_export_smoke.py
+      - run: python tests/stream_smoke.py
       - name: Upload startup log
         if: always()
         uses: actions/upload-artifact@v4

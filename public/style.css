@@ -258,3 +258,5 @@ body.full-map #panel{display:none!important}
 .message-content pre{white-space:pre-wrap;background:#122632;padding:10px;border-radius:7px;overflow:auto}
 .message-content code{font-family:Consolas,monospace;color:#bce9df}
 .chat-table-scroll{overflow:auto}.chat-table-scroll table{border-collapse:collapse;font-size:12px}.chat-table-scroll td,.chat-table-scroll th{border-bottom:1px solid #29434f;padding:5px;white-space:nowrap}
+
+.stream-preview{color:#b2cbd3;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.8 system-ui,sans-serif;margin:12px 0}.stream-preview:after{content:" ▍";color:#77d9c7}

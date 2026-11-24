@@ -299,7 +299,7 @@ class Router:
             self.plans[plan["token"]]=(now,value,plan)
         return plan
 
-    def execute(self,value):
+    def execute(self,value,emit=None):
         if not isinstance(value,dict) or set(value) not in ({"token","request_id","text","cloud"},{"token","request_id","text","cloud","approve_edit"}) or type(value["cloud"]) is not bool or type(value.get("approve_edit",False)) is not bool:
             raise ValueError("Некорректное подтверждение")
         req=validate({"text":value["text"],"request_id":value["request_id"]})
@@ -322,7 +322,7 @@ class Router:
                 with self.cloud.send_lock:
                     existing=self.chat.existing_request(req)
                     if existing:return existing
-                    reply=self.cloud.complete(req["text"],plan["context"])
+                    reply=self.cloud.complete_stream(req["text"],plan["context"],emit) if emit is not None else self.cloud.complete(req["text"],plan["context"])
                     result=self.chat.memory_append(req,reply)
             else:
                 answer=plan["local"]
