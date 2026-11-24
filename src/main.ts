@@ -49,6 +49,7 @@ function decorate(){
  drawEdges();if(motionOff())svg.pauseAnimations();else svg.unpauseAnimations();
 }
 function select(i:number){
+ if(busy||!ready)return;
  selected=i===selected?-1:i;Array.from(legend.children).forEach((b,j)=>b.classList.toggle("selected",j===selected));
  for(const item of items){item.e.classList.toggle("chosen",item.cluster===selected);item.e.style.opacity=selected<0||item.cluster===selected?"":"0.22"}
  detail.textContent=selected<0?"Выберите кластер или точку.":names[selected]+" · "+counts[selected]+" / 200 сообщений";
@@ -170,7 +171,7 @@ async function openHistory(i:number){
 liveButton.onclick=()=>{if(selected>=0)select(selected);else void openHistory(-1)};
 function screenPoint(p:Point):Point{const m=world.getScreenCTM();if(!m)return{x:0,y:0};const s=new DOMPoint(p.x,p.y).matrixTransform(m);return{x:s.x,y:s.y}}
 function updatePulse(now:number){
- if(motionOff()||document.hidden){pulse?.dot.remove();pulse=null;pulseQueue.length=0;document.querySelectorAll(".pending-memory").forEach(e=>e.classList.remove("pending-memory"));return}
+ if(motionOff()||document.hidden){pulse?.dot.remove();pulse=null;pulseQueue.length=0;for(const it of items)it.e.classList.remove("pending-memory");return}
  if(!pulse&&pulseQueue.length){
   const message=pulseQueue.shift()!,rect=chatPrompt.getBoundingClientRect();
   const dot=el("circle",{r:3.8,class:"chat-pulse"},byId("traffic"));
@@ -183,21 +184,21 @@ function updatePulse(now:number){
  // Both actual messages pass through the core; user starts at the input, local reply at the core.
  const p=fromChat?(t<.48?mix(start,core,t/.48):mix(core,target,(t-.48)/.52)):mix(core,target,t);
  dot.setAttribute("cx",String(p.x));dot.setAttribute("cy",String(p.y));
- if(t>=1){const it=items.find(x=>x.cluster===i&&!x.outer&&x.index===message.position-1);if(it){it.e.classList.remove("pending-memory");it.e.classList.add("born");window.setTimeout(()=>it.e.classList.remove("born"),1400)}dot.remove();pulse=null}
+ if(t>=1){if(message.position===200){const next=clusters.findIndex(c=>c.previous_id===message.cluster_id);const icon=items.find(x=>x.cluster===next&&x.outer);if(icon){icon.e.classList.remove("pending-memory");icon.e.classList.add("cluster-born");window.setTimeout(()=>icon.e.classList.remove("cluster-born"),900)}}const it=items.find(x=>x.cluster===i&&!x.outer&&x.index===message.position-1);if(it){it.e.classList.remove("pending-memory");it.e.classList.add("born");window.setTimeout(()=>it.e.classList.remove("born"),1400)}dot.remove();pulse=null}
 }
 form.onsubmit=async e=>{
  e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||!ready||selected>=0)return;
- busy=true;sendButton.disabled=true;chatStatus.textContent="Сохранение…";
+ busy=true;sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Сохранение…";
  if(!pending||pending.text!==raw)pending={text:raw,request_id:crypto.randomUUID()};
  const request=pending;
  try{
   const r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(request)});if(!r.ok)throw Error("save");
   const s:Snapshot=await r.json();pending=null;chatPrompt.value="";syncMap(s.clusters);
   if(selected<0)s.messages.forEach(appendMessage);
-  if(!s.duplicate&&!motionOff()){for(const m of s.messages){const i=clusters.findIndex(c=>c.id===m.cluster_id);items.find(x=>x.cluster===i&&!x.outer&&x.index===m.position-1)?.e.classList.add("pending-memory");pulseQueue.push(m)}requestFrame()}
+  if(!s.duplicate&&!motionOff()){for(const c of s.clusters){if(c.count===0){const i=clusters.findIndex(x=>x.id===c.id);items.find(x=>x.cluster===i&&x.outer)?.e.classList.add("pending-memory")}}for(const m of s.messages){const i=clusters.findIndex(c=>c.id===m.cluster_id);items.find(x=>x.cluster===i&&!x.outer&&x.index===m.position-1)?.e.classList.add("pending-memory");pulseQueue.push(m)}requestFrame()}
   chatStatus.textContent="Сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
  }catch{chatStatus.textContent="Не удалось подтвердить сохранение. Повторите отправку."}
- finally{busy=false;sendButton.disabled=selected>=0||!ready}
+ finally{busy=false;sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
  sendButton.disabled=true;chatPrompt.disabled=true;

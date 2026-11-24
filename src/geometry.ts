@@ -78,10 +78,10 @@ export function collisions(points:readonly {p:Point;r:number}[]):number{
 /** Stable adjacent slots for chronological conversation segments.
  * New clusters do not relocate previously saved messages. */
 export function conversationLayout(raw:readonly number[],mode:Mode):Layout{
- const counts=raw.map(n=>Math.floor(clamp(n,0,200,0))),pitch=10,slots=12;
+ const counts=raw.map(n=>Math.floor(clamp(n,0,200,0))),pitch=10,slots=mode==="compact"?10:12;
  const ring=(i:number)=>Math.floor(i/slots);
  const angle=(i:number)=>-Math.PI/2+(ring(i)%2===0?i%slots:slots-1-i%slots)*TAU/slots;
- const base=(i:number)=>260+ring(i)*310;
+ const base=(i:number)=>(mode==="compact"?220:260)+ring(i)*310;
  const centers=counts.map((_,i)=>mode==="hex"?axialPoint(i+1,390):polar(base(i)+75,angle(i)));
  const radii=counts.map(()=>mode==="hex"?150:105);
  const radius=mode==="hex"?Math.max(360,...centers.map(p=>Math.hypot(p.x,p.y)+190)):Math.max(570,...counts.map((_,i)=>base(i)+270));
