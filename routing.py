@@ -342,7 +342,9 @@ class Router:
         if agent_steps and advanced_answer is None:
             run=self.agent.run(agent_steps,progress=progress)
             if not run['ok']:meta['warnings'].append('Не все шаги выполнены; результат неполный.')
-            meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{"tool":s["tool"],"status":s["status"]} for s in run["steps"]]
+            meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{k:s[k] for k in ("id","tool","status","depends","duration_ms") if k in s} for s in run["steps"]]
+            meta["completeness"]=run["completeness"]
+            if len(run["steps"])==1 and "table" in run["steps"][0]:meta["table"]=run["steps"][0]["table"]
             if run["ok"]:meta["verified_steps"]=agent_steps
             advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
             advanced_sources=[h for s in run["steps"] for h in s["sources"]]
