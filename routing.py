@@ -238,6 +238,8 @@ class Router:
                 advanced_answer="Изменение не выполнено: требуется подтверждение."
                 advanced_sources=[{"source":"work","id":mutation["id"],"title":mutation["label"]}]
         # Explicit deterministic analytical commands, before generic retrieval.
+        if advanced_answer is None and not attachment_ids and re.fullmatch(r"(?:сравни|сопоставь)\s+(?:файлы|документы)[?.]?",q,re.I):
+            advanced_answer="Прикрепите два или три документа для сравнения.";meta["tools"].append("clarification")
         if advanced_answer is None and attachment_ids and re.match(r"^(?:сравни|сопоставь)\b",question,re.I):
             if len(attachment_ids)<2:
                 advanced_answer="Для сравнения прикрепите минимум два документа."
@@ -303,7 +305,7 @@ class Router:
                 if len(hits)>=8:break
         if report is not None:
             meta["tools"].append(report["tool"])
-            meta["table"]={"columns":report["columns"],"rows":report["rows"][:50],"total_rows":report["total_rows"]}
+            meta["table"]={"columns":report["columns"],"rows":[[str(x)[:200] for x in row] for row in report["rows"][:30]],"total_rows":report["total_rows"]}
             count_answer=report_text(report)
             hits=[{**h,"message_id":None,"text":"Источник учтён в локальном отчёте","updated":report["generated"],"age_days":0,"coverage":1,"matched":[]} for h in report["sources"]]
         if count_match:
@@ -365,6 +367,15 @@ class Router:
             self.plans[plan["token"]]=(now,value,plan)
         return plan
 
+    def correction(self,value):
+        if not isinstance(value,dict) or set(value)!={"message","text","confirm"} or value["confirm"] is not True or type(value["message"]) is not int or not isinstance(value["text"],str) or not 1<=len(value["text"].strip())<=1000:raise ValueError("Введите исправление")
+        with closing(self.chat.connect()) as db,db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT id,text FROM chat_messages WHERE id=? AND role='assistant'",(value["message"],)).fetchone()
+            if not row:raise ValueError("Ответ не найден")
+            i=self.knowledge.put(db,"context","Исправление ответа #"+str(row["id"]),"уточнение пользователя",value["text"].strip(),row["text"][:500],"assistant_correction",row["id"])
+        return {"id":i,"state":"candidate"}
+
     def authorize_web(self,value):
         if not isinstance(value,dict) or set(value)!={"token","query","action","confirm"} or value["confirm"] is not True:raise ValueError("Нужно подтверждение интернета")
         with self.lock:
@@ -378,7 +389,7 @@ class Router:
             conflicts=possible_conflicts(plan["hits"],sources)
             plan["conflicts"]=(plan["conflicts"]+conflicts)[:6]
             parts=["[Интернет-источник; непроверенная выдержка; "+p["url"]+"; дата "+(p["date"] or "не указана")+"] "+p["title"]+" "+p["excerpt"] for p in sources]
-            plan["context"]=bounded_context(parts+[plan["context"]],CONTEXT_LIMIT)
+            plan["context"]=bounded_context([plan["context"][:2300]]+parts,CONTEXT_LIMIT)
             # No hallucinated synthesis offline. Preserve local results and show excerpts.
             plan["local"]+="\n\nИнтернет-результаты (не проверенные утверждения):\n"+"\n\n".join(parts)
             if not sources:plan["local"]+="\nНет доступных выдержек."

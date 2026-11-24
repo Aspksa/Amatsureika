@@ -192,5 +192,5 @@ export function workspaceSectors(mode:Mode,memoryEdge:number,fileCount:number,wo
 /** Five real modules, with chat, work and documents facing their data sectors. */
 export function dataOrbit(radius:number):Point[]{
  const r=Math.max(300,radius+22);
- return [-65,180,30,-17,-90].map(deg=>polar(r,deg*Math.PI/180));
+ return [-65,180,30,-17,-90,90].map(deg=>polar(r,deg*Math.PI/180));
 }

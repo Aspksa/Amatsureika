@@ -30,5 +30,9 @@ with tempfile.TemporaryDirectory() as d:
         assert web.call_count==1 and "https://example.com/" in plan["context"]
         result=r.execute({**q,"token":plan["token"],"cloud":False})
         assert result["messages"][-1]["metadata"]["web_sources"]
+    ans=c.memory_snapshot()["messages"][-1]["id"]
+    correction=r.correction({"message":ans,"text":"Нужно проверить источник","confirm":True})
+    assert correction["state"]=="candidate"
+    assert not r.knowledge.context("Нужно проверить источник")
     assert c.health()["ok"]
 print("Chat intent, local calculator, charts, persistent metadata and exact web consent passed")
