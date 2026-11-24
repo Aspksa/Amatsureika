@@ -7,7 +7,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from chat_store import ChatStore
 from workspace import Workspace
 from cloud_client import Cloud
-from routing import Router
+from routing import Router, calculate
 
 with tempfile.TemporaryDirectory() as d:
     path=Path(d)/"memory.db"
@@ -53,5 +53,13 @@ with tempfile.TemporaryDirectory() as d:
     req,p=plan("Сколько сотрудников?")
     assert p["sufficient"] and p["intent"]=="count" and "— 0." in p["local"]
     assert execute(req,p,True)["route"]=="local" and len(calls)==2
+    assert router.search_tool({"text":"альбатрос","scope":"memory"})["hits"]
+    assert not router.search_tool({"text":"альбатрос","scope":"file"})["hits"]
+    assert calculate({"expression":"(125+75)/4"})["result"]=="5E+1"
+    assert calculate({"expression":"0.1+0.2"})["result"]=="0.3"
+    for expr in ("2**99","1/0","__import__('os')","1//2"):
+        try: calculate({"expression":expr})
+        except ValueError: pass
+        else: raise AssertionError("invalid calculation accepted")
     assert chat.health()["ok"]
 print("FTS backfill/increment, work and file retrieval, local sufficiency, consent-bound cloud, trash/archive, duplicate and integrity passed")

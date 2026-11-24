@@ -21,6 +21,9 @@ def session(data_dir, expected=None):
                 page = response.read()
                 assert b'class="core-title"' not in page
                 assert b'class="core-wave"' not in page
+                assert b'id="cloudSend"' not in page
+                assert b'id="chatToolsToggle"' in page and b'<textarea id="prompt"' in page
+                assert b'id="routingConsent"' in page
                 for icon in (b'id="workIcon"',b'id="docsIcon"',b'id="settingsIcon"',b'id="cloudIcon"',b'id="chatIcon"'):
                     assert icon in page
             with urlopen(url+"api/work",timeout=10) as response:

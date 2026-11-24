@@ -288,9 +288,10 @@ async function loadCamera(){
 function drawEdges(){
  for(let i=1;i<clusters.length;i++){const j=i-1;const a=geometry.point(j,0,true),b=geometry.point(i,0,true);el("path",{d:`M${a.x} ${a.y} L${b.x} ${b.y}`,class:"continuation-link",fill:"none",color:color(j)},links)}
 }
-const chat=byId("chat"),chatToggle=byId("chatToggle"),messages=byId("messages"),chatPrompt=byId<HTMLInputElement>("prompt"),chatStatus=byId("chatStatus"),historyTitle=byId("historyTitle"),liveButton=byId("liveChat"),form=byId<HTMLFormElement>("chatForm"),sendButton=form.querySelector("button") as HTMLButtonElement;
+const chat=byId("chat"),chatToggle=byId("chatToggle"),messages=byId("messages"),chatPrompt=byId<HTMLTextAreaElement>("prompt"),chatStatus=byId("chatStatus"),historyTitle=byId("historyTitle"),liveButton=byId("liveChat"),form=byId<HTMLFormElement>("chatForm"),sendButton=byId<HTMLButtonElement>("sendMessage");
 let busy=false,historyRevision=0,ready=false;
-let pending:{text:string;request_id:string;cloud:boolean}|null=null;
+let pending:{text:string;request_id:string}|null=null;
+let cloudAvailable=false,localOnly=false,preparing=false,cancelPreparation=false;
 function syncChatIcons(){
  const open=!chat.hidden&&!document.body.classList.contains("full-map");
  chatToggle.setAttribute("aria-expanded",String(open));group("chatIcon").setAttribute("aria-expanded",String(open));group("chatIcon").classList.toggle("chat-open",open);
@@ -319,7 +320,13 @@ function syncMap(next:ChatCluster[]){
 }
 function appendMessage(m:ChatMessage){
  if(messages.querySelector('[data-message="'+m.id+'"]'))return;
- const p=document.createElement("p");p.className=m.role==="user"?"user-message":"reply";p.dataset.message=String(m.id);p.textContent=m.text;messages.append(p);while(messages.children.length>500)messages.firstElementChild?.remove();messages.scrollTop=messages.scrollHeight;
+ const article=document.createElement("article");article.className="chat-message "+(m.role==="user"?"user-message":"reply");article.dataset.message=String(m.id);article.dataset.role=m.role;
+ const p=document.createElement("p");p.textContent=m.text;article.append(p);
+ const actions=document.createElement("div");actions.className="message-actions";
+ const copy=document.createElement("button");copy.type="button";copy.textContent="Копировать";copy.onclick=()=>void copyText(m.text);actions.append(copy);
+ if(m.role==="user"){const reuse=document.createElement("button");reuse.type="button";reuse.textContent="Повторить";reuse.onclick=()=>{if(busy)return;if(selected>=0)select(selected);chatPrompt.value=m.text.slice(0,1000);resizePrompt();chatPrompt.focus()};actions.append(reuse)}
+ const locate=document.createElement("button");locate.type="button";locate.textContent="На карте";locate.onclick=()=>{if(busy)return;const i=clusters.findIndex(c=>c.id===m.cluster_id);if(i>=0)focusCluster(i)};actions.append(locate);
+ article.append(actions);messages.append(article);while(messages.children.length>500)messages.firstElementChild?.remove();messages.scrollTop=messages.scrollHeight;
 }
 async function snapshot(cluster?:number):Promise<Snapshot>{const r=await fetch("/api/memory"+(cluster===undefined?"":"?cluster="+cluster),{cache:"no-store"});if(!r.ok)throw Error("history");return r.json()}
 async function openHistory(i:number){
@@ -430,20 +437,21 @@ function approveCloud(text:string,plan:RoutePlan):Promise<boolean>{
 }
 form.onsubmit=async e=>{
  e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||!ready||selected>=0)return;
- const paid=byId<HTMLInputElement>("cloudSend").checked;
- busy=true;sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Поиск в локальной памяти…";
- if(!pending||pending.text!==raw||pending.cloud!==paid)pending={text:raw,request_id:crypto.randomUUID(),cloud:paid};
+ const paid=cloudAvailable&&!localOnly;
+ busy=true;preparing=true;cancelPreparation=false;updateToolState();sendButton.disabled=true;chatPrompt.disabled=true;chatStatus.textContent="Поиск в локальной памяти…";
+ if(!pending||pending.text!==raw)pending={text:raw,request_id:crypto.randomUUID()};
  const request=pending;let plan:RoutePlan|undefined,approved=false;
  try{
   await runQuietFlow<Snapshot>(paid,{
    leg:routeLeg,
    prepare:async requested=>{
-    chatStatus.textContent="Поиск: переписка, работа, документы…";
+    checkPreparation();chatStatus.textContent="Поиск: переписка, работа, документы…";
     plan=await routingPost<RoutePlan>("plan",{text:request.text,request_id:request.request_id});
     await refreshWorkspaceMap();
     chatStatus.textContent="Найдено источников: "+plan.hits.length+(plan.fts?" · FTS5":" · ограниченный поиск");
-    await retrieveAnimation(plan.hits);
-    approved=!!(requested&&!plan.sufficient&&await approveCloud(request.text,plan));
+    checkPreparation();await retrieveAnimation(plan.hits);checkPreparation();
+    approved=!!(requested&&cloudAvailable&&!localOnly&&!plan.sufficient&&await approveCloud(request.text,plan));
+    checkPreparation();preparing=false;updateToolState();
     chatStatus.textContent=approved?"Cloud.ru: отправка подтверждена…":plan.sufficient?"Локальный ответ…":"Локальные результаты · без Cloud.ru";
     return approved;
    },
@@ -453,7 +461,7 @@ form.onsubmit=async e=>{
     return routingPost<Snapshot>("execute",{text:request.text,request_id:request.request_id,token:plan.token,cloud:approved});
    },
    committed:s=>{
-    const previousCount=clusters.length;syncMap(s.clusters);pending=null;chatPrompt.value="";byId<HTMLInputElement>("cloudSend").checked=false;
+    const previousCount=clusters.length;syncMap(s.clusters);pending=null;chatPrompt.value="";resizePrompt();
     if(selected<0)s.messages.filter(m=>m.role==="user").forEach(appendMessage);
     if(!s.duplicate&&!motionOff()&&!document.hidden)for(let i=previousCount;i<clusters.length;i++)pendingClusters.add(i);
     renderKey="";requestFrame();
@@ -463,8 +471,8 @@ form.onsubmit=async e=>{
    remember
   });
   chatStatus.textContent=(approved?"Cloud.ru":"Локальный ответ")+" · сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
- }catch(error){clearFlow();arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":"Связь прервана. Повторите отправку — дубликата не будет.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
- finally{busy=false;sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
+ }catch(error){clearFlow();if(cancelPreparation){chatStatus.textContent="Подготовка отменена. Запрос не отправлен.";return}arrival(group(approved?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=approved?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":"Связь прервана. Повторите отправку — дубликата не будет.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";resizePrompt();messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
+ finally{busy=false;preparing=false;cancelPreparation=false;updateToolState();sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
  sendButton.disabled=true;chatPrompt.disabled=true;
@@ -489,14 +497,14 @@ searchInput.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault(
 new ResizeObserver(()=>requestFrame()).observe(svg);
 
 type CloudState={has_key:boolean;saved_key:boolean;model:string;verified:boolean;models:string[]};
-const cloudDialog=byId<HTMLDialogElement>("cloudDialog"),cloudIcon=group("cloudIcon"),cloudKey=byId<HTMLInputElement>("cloudKey"),cloudModels=byId<HTMLSelectElement>("cloudModels"),cloudStatus=byId("cloudStatus"),cloudSend=byId<HTMLInputElement>("cloudSend");
+const cloudDialog=byId<HTMLDialogElement>("cloudDialog"),cloudIcon=group("cloudIcon"),cloudKey=byId<HTMLInputElement>("cloudKey"),cloudModels=byId<HTMLSelectElement>("cloudModels"),cloudStatus=byId("cloudStatus");
 let cloudBusy=false,cloudState:CloudState|null=null;
 function showCloud(s:CloudState){
  cloudState=s;cloudModels.replaceChildren();
  for(const model of s.models){const opt=document.createElement("option");opt.value=model;opt.textContent=model;cloudModels.append(opt)}
  if(s.models.includes(s.model))cloudModels.value=s.model;
  const connected=s.verified&&s.models.includes(s.model);
- cloudIcon.classList.toggle("cloud-connected",connected);cloudSend.disabled=!connected;if(!connected)cloudSend.checked=false;
+ cloudIcon.classList.toggle("cloud-connected",connected);cloudAvailable=connected;updateToolState();
  byId("cloudSelected").textContent=s.model||"Модель не выбрана";
  cloudStatus.textContent=connected?"Каталог проверен · модель выбрана":s.has_key?"Ключ сохранён локально · загрузите каталог":"Введите API-ключ";
  byId<HTMLButtonElement>("cloudConnect").disabled=!s.verified||!s.models.length||cloudBusy;
@@ -507,7 +515,7 @@ async function cloudAction(path:string,body?:object){
  for(const id of ["cloudSave","cloudLoad","cloudConnect","cloudRemove"])byId<HTMLButtonElement>(id).disabled=true;
  cloudStatus.textContent="Выполняется…";
  try{const r=await fetch("/api/cloud/"+path,body===undefined?{cache:"no-store"}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const s=await r.json();if(!r.ok)throw Error(s.error||"Ошибка Cloud.ru");showCloud(s);if(path==="key")cloudKey.value=""}
- catch(e){cloudStatus.textContent=e instanceof Error?e.message:"Cloud.ru недоступен";if(path==="models"||path==="key"){cloudSend.checked=false;cloudSend.disabled=true;cloudIcon.classList.remove("cloud-connected")}}
+ catch(e){cloudStatus.textContent=e instanceof Error?e.message:"Cloud.ru недоступен";if(path==="models"||path==="key"){cloudAvailable=false;updateToolState();cloudIcon.classList.remove("cloud-connected")}}
  finally{cloudBusy=false;for(const id of ["cloudSave","cloudLoad","cloudRemove"])byId<HTMLButtonElement>(id).disabled=false;byId<HTMLButtonElement>("cloudConnect").disabled=!cloudState?.verified||!cloudState.models.length}
 }
 function openCloud(){if(!cloudDialog.open)cloudDialog.showModal();void cloudAction("status")}
@@ -541,6 +549,67 @@ for(const icon of moduleList()){
  icon.addEventListener("pointerenter",show);icon.addEventListener("pointerleave",unhover);icon.addEventListener("focus",show);icon.addEventListener("blur",unhover);
 }
 byId("fileDetailClose").onclick=()=>byId<HTMLDialogElement>("fileDetail").close();
+const toolMenu=byId("chatTools"),toolToggle=byId<HTMLButtonElement>("chatToolsToggle"),searchDialog=byId<HTMLDialogElement>("chatSearchDialog");
+function closeTools(){toolMenu.hidden=true;toolToggle.setAttribute("aria-expanded","false")}
+toolToggle.onclick=()=>{toolMenu.hidden=!toolMenu.hidden;toolToggle.setAttribute("aria-expanded",String(!toolMenu.hidden))};
+document.addEventListener("pointerdown",e=>{if(e.target instanceof Node&&!toolMenu.contains(e.target)&&!toolToggle.contains(e.target))closeTools()});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeTools()});
+function updateToolState(){
+ const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
+ byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
+ byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator"])byId<HTMLButtonElement>(id).disabled=busy;
+}
+function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
+byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();byId<HTMLDialogElement>("routingConsent").close("local");chatStatus.textContent="Отмена подготовки…"};
+function resizePrompt(){chatPrompt.style.height="auto";chatPrompt.style.height=Math.min(chatPrompt.scrollHeight,120)+"px"}
+chatPrompt.addEventListener("input",resizePrompt);
+chatPrompt.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!busy)form.requestSubmit(sendButton)}});
+async function copyText(text:string){
+ try{await navigator.clipboard.writeText(text);chatStatus.textContent="Скопировано"}catch{chatStatus.textContent="Копирование недоступно. Выделите текст вручную."}
+}
+function displayedText(){return Array.from(messages.querySelectorAll<HTMLElement>(".chat-message")).map(m=>(m.dataset.role==="user"?"Вы":"Amatsureika")+": "+(m.querySelector("p")?.textContent??"")).join("\n\n")}
+byId("toolCopy").onclick=()=>{closeTools();void copyText(displayedText())};
+byId("toolExport").onclick=()=>{closeTools();const blob=new Blob([displayedText()],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="Amatsureika-"+(selected>=0?"block-"+clusters[selected].id:"dialog")+".txt";a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)};
+byId("toolLatest").onclick=()=>{closeTools();if(!busy){if(selected>=0)select(selected);else messages.scrollTop=messages.scrollHeight}};
+byId("toolLocal").onclick=()=>{if(busy)return;localOnly=!localOnly;updateToolState();closeTools();chatStatus.textContent=localOnly?"Локальный режим":"Автоматический выбор маршрута"};
+function openModule(id:string){closeTools();group(id).dispatchEvent(new MouseEvent("click"))}
+byId("toolWork").onclick=()=>openModule("workIcon");byId("toolDocs").onclick=()=>openModule("docsIcon");byId("toolCloud").onclick=()=>openModule("cloudIcon");
+byId("toolSearch").onclick=()=>{closeTools();searchDialog.showModal();byId<HTMLInputElement>("chatSearchQuery").focus()};
+byId("chatSearchClose").onclick=()=>searchDialog.close();
+let searchRun=0;
+searchDialog.addEventListener("close",()=>{searchRun++});
+byId<HTMLFormElement>("chatSearchForm").onsubmit=async e=>{
+ e.preventDefault();const q=byId<HTMLInputElement>("chatSearchQuery").value.trim();if(!q)return;
+ const run=++searchRun,results=byId("chatSearchHits");results.textContent="Поиск…";
+ try{
+  const data=await routingPost<{hits:SearchHit[];fts:boolean}>("search",{text:q,scope:byId<HTMLSelectElement>("chatSearchScope").value});
+  if(run!==searchRun)return;results.replaceChildren();
+  if(!data.hits.length){results.textContent="Совпадений не найдено";return}
+  for(const hit of data.hits){
+   const card=document.createElement("div");card.className="chat-search-hit";
+   const title=document.createElement("strong");title.textContent=({memory:"Память",work:"Работа",file:"Документы"}[hit.source])+" #"+hit.id+" · "+hit.title;
+   const body=document.createElement("p");body.textContent=hit.text;
+   const button=document.createElement("button");button.type="button";button.textContent="Открыть источник";
+   button.onclick=()=>{
+    searchDialog.close();
+    if(hit.source==="memory"){const i=clusters.findIndex(c=>c.id===hit.id);if(i>=0)focusCluster(i)}
+    else if(hit.source==="work"){const r=workspaceMap.records.find(x=>x.id===hit.id);if(r)void workspaceUI.openRecord(r.kind,r.id)}
+    else{const f=workspaceMap.files.find(x=>x.id===hit.id);if(f){byId<HTMLAnchorElement>("fileDownload").href="/api/disk/download?id="+f.id;byId("fileDetailName").textContent=f.name;byId("fileDetailSize").textContent=(f.size/1024).toLocaleString("ru",{maximumFractionDigits:1})+" КБ";byId<HTMLDialogElement>("fileDetail").showModal()}}
+   };
+   card.append(title,body,button);results.append(card);
+  }
+ }catch(e){if(run===searchRun)results.textContent=e instanceof Error?e.message:"Ошибка поиска"}
+};
+byId("toolCalculator").onclick=()=>{closeTools();byId<HTMLDialogElement>("calculatorDialog").showModal()};
+byId("calculatorClose").onclick=()=>byId<HTMLDialogElement>("calculatorDialog").close();
+byId<HTMLFormElement>("calculatorForm").onsubmit=async e=>{
+ e.preventDefault();const output=byId("calculatorResult");
+ try{const data=await routingPost<{result:string}>("calculate",{expression:byId<HTMLInputElement>("calculatorExpression").value});output.textContent=data.result}
+ catch(e){output.textContent=e instanceof Error?e.message:"Ошибка вычисления"}
+};
+byId("calculatorInsert").onclick=()=>{if(busy||selected>=0)return;const value=byId("calculatorResult").textContent??"";if(!/^-?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/i.test(value))return;chatPrompt.value=(chatPrompt.value+value).slice(0,1000);resizePrompt();byId<HTMLDialogElement>("calculatorDialog").close();chatPrompt.focus()};
+updateToolState();
 const full=byId("fullMap");
 function setFull(on:boolean){document.body.classList.toggle("full-map",on);full.textContent=on?"Выйти из полноэкранного режима":"На весь экран";full.setAttribute("aria-pressed",String(on));syncChatIcons();requestFrame()}
 full.onclick=async()=>{

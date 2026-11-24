@@ -3,7 +3,7 @@ import json
 import sqlite3
 from urllib.parse import urlsplit, parse_qs, quote
 from workspace import Workspace, LIMIT
-from routing import Router
+from routing import Router, calculate
 import shutil
 from chat_store import ChatStore
 from cloud_client import Cloud, CloudError
@@ -94,7 +94,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -120,6 +120,10 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0 < size <= (16384 if path in ("/api/chat","/api/memory","/api/cloud/key","/api/work","/api/routing/plan","/api/routing/execute") else 4096):
                 raise ValueError("Invalid size")
             value = json.loads(self.rfile.read(size))
+            if path == "/api/routing/search":
+                return self.send_json(self.router.search_tool(value))
+            if path == "/api/routing/calculate":
+                return self.send_json(calculate(value))
             if path == "/api/routing/plan":
                 return self.send_json(self.router.plan(value))
             if path == "/api/routing/execute":
@@ -157,7 +161,7 @@ class Handler(SimpleHTTPRequestHandler):
         except (sqlite3.Error, RuntimeError, OSError):
             self.send_json({"error": "Local memory unavailable"}, 503)
         except (ValueError, TypeError, OverflowError) as exc:
-            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute") else "Invalid settings"}, 400)
+            self.send_json({"error": str(exc) if path in ("/api/work","/api/disk","/api/routing/plan","/api/routing/execute","/api/routing/search","/api/routing/calculate") else "Invalid settings"}, 400)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
