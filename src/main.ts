@@ -1,4 +1,5 @@
-import {ClusterIndex, curvedPoint, directedBlockLayout, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
+import {runQuietFlow, particleAt, PARTICLES, type Leg} from "./flow.js";
+import {ClusterIndex, directedBlockLayout, valid, clamp, polar, TAU, type Mode, type Point} from "./geometry.js";
 const NS="http://www.w3.org/2000/svg";
 const byId=<T extends HTMLElement>(id:string)=>document.getElementById(id) as T;
 const svg=document.getElementById("brain") as unknown as SVGSVGElement;
@@ -11,7 +12,6 @@ type Item={e:SVGElement;cluster:number;index:number;outer:boolean;from:Point;to:
 const items:Item[]=[];
 const visibleItems=new Map<string,Item>();
 const summaries=new Map<number,SVGPathElement>();
-const hiddenPoints=new Set<string>();
 const pendingClusters=new Set<number>();
 let renderKey="",mapRevision=0;
 const key=(i:number,n:number,outer:boolean)=>i+":"+n+":"+outer;
@@ -20,8 +20,10 @@ type ChatCluster={id:number;previous_id:number|null;count:number};
 type ChatMessage={id:number;cluster_id:number;position:number;role:"user"|"assistant";text:string};
 type Snapshot={clusters:ChatCluster[];messages:ChatMessage[];duplicate?:boolean};
 let clusters:ChatCluster[]=[];
-let pulse:{message:ChatMessage;begin:number;dot:SVGCircleElement;trail:SVGCircleElement[];wave:SVGCircleElement;start:Point;fromChat:boolean} | null=null;
-const pulseQueue:ChatMessage[]=[];
+type Endpoint=()=>Point;
+type FlowLeg={from:Endpoint;to:Endpoint;begin:number;speed:number;dots:SVGCircleElement[];line:SVGLineElement;resolve:()=>void};
+const flowLegs=new Set<FlowLeg>();
+const arrivalTimers=new Map<SVGElement,number>();
 let mode:Mode="radial", selected=-1, zoom=1, tx=0,ty=0, speed=1, density=.5, paused=matchMedia("(prefers-reduced-motion: reduce)").matches;
 let frame=0, start=0, moving=false, quality=1, slowFrames=0, fastFrames=0, lastFrame=0;
 let flight:{z:number;x:number;y:number;fromZ:number;fromX:number;fromY:number;begin:number}|null=null;
@@ -78,8 +80,8 @@ function renderFrame(now:number){
  world.setAttribute("transform",`translate(${tx} ${ty}) scale(${zoom})`);byId("reset").textContent=Math.round(zoom*100)+"%";
  const level=zoom<.45?"overview":zoom<1.6?"normal":zoom<5?"near":"detail";svg.dataset.lod=level;svg.dataset.quality=String(quality);
  renderVisible(level);
- updatePulse(now);
- if(moving||flight||pulse||pulseQueue.length){requestFrame()}else lastFrame=0;
+ updateFlow(now);
+ if(moving||flight||flowLegs.size){requestFrame()}else lastFrame=0;
 }
 function renderVisible(level:string){
  const view=svg.viewBox.baseVal, margin=50;
@@ -139,7 +141,7 @@ async function loadDesign(){
  catch{if(revision===initial)byId("saveState").textContent="Настройки недоступны; используются стандартные.";}
 }
 reduced.addEventListener("change",()=>{decorate();applyPause()});
-function applyPause(){document.body.classList.toggle("paused",motionOff());byId("pause").textContent=paused?"Продолжить анимацию":"Пауза анимации";if(motionOff())svg.pauseAnimations();else svg.unpauseAnimations();requestFrame()}
+function applyPause(){if(motionOff())clearFlow();document.body.classList.toggle("paused",motionOff());byId("pause").textContent=paused?"Продолжить анимацию":"Пауза анимации";if(motionOff())svg.pauseAnimations();else svg.unpauseAnimations();requestFrame()}
 byId("pause").onclick=()=>{paused=!paused;decorate();applyPause()};
 const panel=byId("panel"),toggle=byId("panelToggle");panel.hidden=true;toggle.setAttribute("aria-expanded","false");toggle.onclick=()=>{panel.hidden=!panel.hidden;toggle.setAttribute("aria-expanded",String(!panel.hidden))};decorate();applyEffects(false);zoom=fitZoom();camera();void loadDesign();
 
@@ -192,34 +194,70 @@ async function openHistory(i:number){
 }
 liveButton.onclick=()=>{if(selected>=0)select(selected);else void openHistory(-1)};
 function screenPoint(p:Point):Point{const m=world.getScreenCTM();if(!m)return{x:0,y:0};const s=new DOMPoint(p.x,p.y).matrixTransform(m);return{x:s.x,y:s.y}}
-function clearPulse(){
- pulse?.dot.remove();pulse?.wave.remove();pulse?.trail.forEach(x=>x.remove());pulse=null;pulseQueue.length=0;
- hiddenPoints.clear();pendingClusters.clear();renderKey="";document.body.classList.remove("memory-flow");
+function corePoint(){return screenPoint({x:0,y:0})}
+function cloudPoint():Point{
+ const m=group("cloudIcon").getScreenCTM();if(!m)return corePoint();
+ const p=new DOMPoint(0,0).matrixTransform(m);return{x:p.x,y:p.y};
 }
-function updatePulse(now:number){
- if(motionOff()||document.hidden){if(pulse||pulseQueue.length||pendingClusters.size){clearPulse();requestFrame()}return}
- if(!pulse&&pulseQueue.length){
-  const message=pulseQueue.shift()!,rect=chatPrompt.getBoundingClientRect(),fromChat=message.role==="user";
-  const layer=byId("traffic"),className="chat-pulse "+(fromChat?"request-pulse":"reply-pulse");
-  const trail=Array.from({length:8},(_,i)=>el("circle",{r:Math.max(.7,3-i*.28),class:className+" trail",opacity:Math.max(.05,.48-i*.05)},layer));
-  const dot=el("circle",{r:3.8,class:className},layer),wave=el("circle",{r:0,class:"energy-wave"},layer);
-  pulse={message,begin:now,dot,trail,wave,start:{x:rect.left+rect.width*.5,y:rect.top+rect.height*.5},fromChat};
-  document.body.classList.add("memory-flow");
+function chatPoint():Point{const r=chatPrompt.getBoundingClientRect();return r.width&&r.height?{x:r.left+r.width*.5,y:r.top+r.height*.5}:corePoint()}
+function replyPoint():Point{
+ const r=messages.getBoundingClientRect();return r.width&&r.height?{x:r.left+r.width*.5,y:r.bottom-18}:chatPoint();
+}
+function arrival(target:SVGElement|undefined,kind:"request"|"reply"|"memory"|"error"){
+ if(!target||motionOff()||document.hidden)return;
+ const old=arrivalTimers.get(target);if(old!==undefined)window.clearTimeout(old);
+ target.classList.remove("arrived-request","arrived-reply","arrived-memory","arrived-error");
+ target.classList.add("arrived-"+kind);
+ arrivalTimers.set(target,window.setTimeout(()=>{target.classList.remove("arrived-"+kind);arrivalTimers.delete(target)},550));
+}
+function finishLeg(leg:FlowLeg){
+ if(!flowLegs.delete(leg))return;
+ leg.line.remove();leg.dots.forEach(d=>d.remove());leg.resolve();
+}
+function clearFlow(){
+ for(const leg of Array.from(flowLegs))finishLeg(leg);
+ for(const [target,timer] of arrivalTimers){window.clearTimeout(timer);target.classList.remove("arrived-request","arrived-reply","arrived-memory","arrived-error")}
+ arrivalTimers.clear();pendingClusters.clear();renderKey="";
+}
+function playLeg(from:Endpoint,to:Endpoint,kind:"request"|"reply"|"memory"):Promise<void>{
+ if(motionOff()||document.hidden)return Promise.resolve();
+ return new Promise(resolve=>{
+  const layer=byId("traffic"),cls="quiet-"+kind;
+  const line=el("line",{class:"quiet-route "+cls},layer);
+  const dots=Array.from({length:PARTICLES},(_,i)=>el("circle",{r:particleAt(0,i,speed).radius,class:"quiet-particle "+cls,opacity:0},layer));
+  flowLegs.add({from,to,begin:performance.now(),speed,dots,line,resolve});requestFrame();
+ });
+}
+function updateFlow(now:number){
+ if(motionOff()||document.hidden){if(flowLegs.size||pendingClusters.size){clearFlow();requestFrame()}return}
+ for(const leg of flowLegs){
+  const a=leg.from(),b=leg.to();
+  if(![a.x,a.y,b.x,b.y].every(Number.isFinite)){finishLeg(leg);continue}
+  leg.line.setAttribute("x1",String(a.x));leg.line.setAttribute("y1",String(a.y));leg.line.setAttribute("x2",String(b.x));leg.line.setAttribute("y2",String(b.y));
+  let done=true;
+  leg.dots.forEach((dot,i)=>{
+   const sample=particleAt(now-leg.begin,i,leg.speed),p=mix(a,b,sample.progress);
+   dot.setAttribute("cx",String(p.x));dot.setAttribute("cy",String(p.y));dot.setAttribute("opacity",String(sample.opacity));if(!sample.done)done=false;
+  });
+  if(done)finishLeg(leg);
  }
- if(!pulse){document.body.classList.remove("memory-flow");return}
- const {message,begin,dot,trail,wave,start,fromChat}=pulse,i=clusters.findIndex(c=>c.id===message.cluster_id);
- if(i<0){clearPulse();requestFrame();return}
- const target=screenPoint(geometry.centers[i]),core=screenPoint({x:0,y:0}),duration=1250/speed,t=Math.min(1,(now-begin)/duration);
- const at=(v:number)=>fromChat?(v<.46?curvedPoint(start,core,v/.46,.16):curvedPoint(core,target,(v-.46)/.54,-.17)):curvedPoint(core,target,v,-.17);
- const p=at(t);dot.setAttribute("cx",String(p.x));dot.setAttribute("cy",String(p.y));
- trail.forEach((d,j)=>{const p=at(Math.max(0,t-(j+1)*.027));d.setAttribute("cx",String(p.x));d.setAttribute("cy",String(p.y));d.style.opacity=String(Math.max(0,1-j/8)*Math.min(1,t*6)*.48)});
- const progress=fromChat?Math.max(0,(t-.46)/.54):t;
- wave.setAttribute("cx",String(core.x));wave.setAttribute("cy",String(core.y));wave.setAttribute("r",String(15+progress*Math.hypot(target.x-core.x,target.y-core.y)));wave.style.opacity=String(progress>0?(1-progress)*.36:0);
- if(t>=1){
-  pendingClusters.delete(i);const it=visibleItems.get(key(i,0,false));
-  if(it){it.e.classList.remove("pending-memory");it.e.classList.add("born");window.setTimeout(()=>it.e.classList.remove("born"),1300)}
-  dot.remove();wave.remove();trail.forEach(x=>x.remove());pulse=null;renderKey="";requestFrame();
+}
+async function routeLeg(leg:Leg){
+ switch(leg){
+  case "chat-core":await playLeg(chatPoint,corePoint,"request");arrival(group("core"),"request");break;
+  case "core-cloud":await playLeg(corePoint,cloudPoint,"request");arrival(group("cloudIcon"),"request");break;
+  case "cloud-core":await playLeg(cloudPoint,corePoint,"reply");arrival(group("core"),"reply");break;
+  case "core-chat":await playLeg(corePoint,replyPoint,"reply");break;
  }
+}
+async function remember(s:Snapshot){
+ const ids=Array.from(new Set(s.messages.map(m=>m.cluster_id)));
+ await Promise.all(ids.map(async id=>{
+  const i=clusters.findIndex(c=>c.id===id);if(i<0)return;
+  await playLeg(corePoint,()=>screenPoint(geometry.centers[i]),"memory");
+  pendingClusters.delete(i);const item=visibleItems.get(key(i,0,false));
+  item?.e.classList.remove("pending-memory");arrival(item?.e,"memory");renderKey="";requestFrame();
+ }));
 }
 form.onsubmit=async e=>{
  e.preventDefault();const raw=chatPrompt.value.trim();if(!raw||busy||!ready||selected>=0)return;
@@ -229,15 +267,26 @@ form.onsubmit=async e=>{
  if(!pending||pending.text!==raw||pending.cloud!==paid)pending={text:raw,request_id:crypto.randomUUID(),cloud:paid};
  const request=pending;
  try{
-  const r=await fetch("/api/memory",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(request)});if(!r.ok){const error=await r.json().catch(()=>({error:"Ошибка сохранения"}));throw Error(error.error||"Ошибка сохранения")}
-  const s:Snapshot=await r.json();const previousCount=clusters.length;pending=null;chatPrompt.value="";byId<HTMLInputElement>("cloudSend").checked=false;syncMap(s.clusters);
-  if(selected<0)s.messages.forEach(appendMessage);
-  if(!s.duplicate&&!motionOff()){
-   for(const m of s.messages){const i=clusters.findIndex(c=>c.id===m.cluster_id);if(i>=previousCount)pendingClusters.add(i);pulseQueue.push(m)}
-   if(pulseQueue.length>24)clearPulse();renderKey="";requestFrame();
-  }
+  await runQuietFlow<Snapshot>(paid,{
+   leg:routeLeg,
+   waiting:active=>{group("cloudIcon").classList.toggle("cloud-waiting",active);if(active)chatStatus.textContent="Cloud.ru: ожидание ответа…"},
+   send:async()=>{
+    const r=await fetch("/api/memory",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(request)});
+    if(!r.ok){const error=await r.json().catch(()=>({error:"Ошибка сохранения"}));throw Error(error.error||"Ошибка сохранения")}
+    return r.json();
+   },
+   committed:s=>{
+    const previousCount=clusters.length;syncMap(s.clusters);pending=null;chatPrompt.value="";byId<HTMLInputElement>("cloudSend").checked=false;
+    if(selected<0)s.messages.filter(m=>m.role==="user").forEach(appendMessage);
+    if(!s.duplicate&&!motionOff()&&!document.hidden)for(let i=previousCount;i<clusters.length;i++)pendingClusters.add(i);
+    renderKey="";requestFrame();
+   },
+   duplicate:s=>!!s.duplicate,
+   deliver:s=>{if(selected<0)s.messages.filter(m=>m.role==="assistant").forEach(appendMessage)},
+   remember
+  });
   chatStatus.textContent="Сохранено · "+counts.reduce((a,b)=>a+b,0)+" сообщений";
- }catch(error){chatStatus.textContent=request.cloud?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":"Связь прервана. Повторите отправку — дубликата не будет.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
+ }catch(error){clearFlow();arrival(group(request.cloud?"cloudIcon":"core"),"error");requestFrame();chatStatus.textContent=request.cloud?"Cloud.ru: "+(error instanceof Error?error.message:"ошибка")+". Автоповтора нет; проверьте расход перед повтором.":"Связь прервана. Повторите отправку — дубликата не будет.";try{const recovered=await snapshot();syncMap(recovered.clusters);if(recovered.messages.some(m=>(m as ChatMessage & {request_id?:string}).request_id===request.request_id)){pending=null;chatPrompt.value="";messages.replaceChildren();recovered.messages.forEach(appendMessage);chatStatus.textContent="Сохранение восстановлено из SQLite"}}catch{/* preserve pending request for retry */}}
  finally{busy=false;sendButton.disabled=selected>=0||!ready;chatPrompt.disabled=selected>=0||!ready;if(!chatPrompt.disabled)chatPrompt.focus()}
 };
 async function initChat(){
@@ -246,7 +295,7 @@ async function initChat(){
  catch{chatStatus.textContent="Не удалось загрузить локальную память. Обновите страницу."}
  finally{sendButton.disabled=!ready;chatPrompt.disabled=!ready}
 }
-document.addEventListener("visibilitychange",()=>{if(document.hidden)clearPulse();else{renderKey="";requestFrame();if(ready&&!busy)void snapshot().then(s=>{syncMap(s.clusters);if(selected<0)s.messages.forEach(appendMessage)}).catch(()=>{})}});
+document.addEventListener("visibilitychange",()=>{if(document.hidden)clearFlow();else{renderKey="";requestFrame();if(ready&&!busy)void snapshot().then(s=>{syncMap(s.clusters);if(selected<0)s.messages.forEach(appendMessage)}).catch(()=>{})}});
 void initChat();
 async function checkHealth(){try{const r=await fetch("/api/chat/health",{cache:"no-store"});if(!r.ok)throw Error("health");const h=await r.json();byId("memoryHealth").textContent=h.ok?"SQLite: целостность подтверждена · "+h.messages+" сообщений":"SQLite: обнаружена аномалия · "+h.issues.join(", ")}catch{byId("memoryHealth").textContent="Диагностика памяти недоступна"}}
 byId("checkMemory").onclick=()=>void checkHealth();void checkHealth();
