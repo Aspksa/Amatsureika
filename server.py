@@ -96,7 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction", "/api/routing/preview", "/api/routing/plan-stream", "/api/routing/export-result"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction", "/api/routing/preview", "/api/routing/plan-stream", "/api/routing/export-result", "/api/agent/rules"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -166,6 +166,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(self.router.importer.fill(value))
             if path == "/api/agent/import-commit":
                 return self.send_json(self.router.importer.commit(value))
+            if path == "/api/agent/rules":
+                return self.send_json(self.router.agent.rule_action(value))
             if path == "/api/agent/state":
                 if value!={}:raise ValueError("Некорректный запрос")
                 return self.send_json(self.router.agent.state())
@@ -243,7 +245,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent / "public"
-    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js", "workspace.js")):
+    if not all((root / name).is_file() for name in ("main.js", "geometry.js", "flow.js", "workspace.js", "chat_virtual.js")):
         raise SystemExit("Build the frontend first: npm run build")
     path=args.data_dir / "amatsureika.db"
     store=DesignStore(path)

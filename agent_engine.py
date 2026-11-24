@@ -68,13 +68,21 @@ class Agent:
     def __init__(self,chat,workspace,reports,advanced):
         self.chat,self.workspace,self.reports,self.advanced=chat,workspace,reports,advanced
         self.stop=threading.Event()
-        self.worker=None
+        self.worker=None;self.next_rules_check=0;self.index_refresh=None
         with closing(chat.connect()) as db,db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS agent_runs(id TEXT PRIMARY KEY,tool TEXT NOT NULL,status TEXT NOT NULL,duration_ms INTEGER NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS agent_scenarios(id TEXT PRIMARY KEY,name TEXT NOT NULL,steps TEXT NOT NULL,created TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS agent_jobs(id TEXT PRIMARY KEY,steps TEXT NOT NULL,status TEXT NOT NULL,due TEXT NOT NULL,result TEXT NOT NULL DEFAULT '',created TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS agent_job_due ON agent_jobs(status,due);
+                CREATE TABLE IF NOT EXISTS agent_rules(
+                    id TEXT PRIMARY KEY, scenario TEXT NOT NULL REFERENCES agent_scenarios(id),
+                    steps TEXT NOT NULL, mode TEXT NOT NULL, interval_seconds INTEGER NOT NULL,
+                    file_id INTEGER, file_version TEXT NOT NULL, next_check REAL NOT NULL,
+                    enabled INTEGER NOT NULL, current_month INTEGER NOT NULL, draft INTEGER NOT NULL,
+                    status TEXT NOT NULL, last_job TEXT NOT NULL DEFAULT '');
+                CREATE INDEX IF NOT EXISTS agent_rules_due ON agent_rules(enabled,next_check);
+                CREATE TABLE IF NOT EXISTS agent_rule_jobs(job_id TEXT PRIMARY KEY REFERENCES agent_jobs(id) ON DELETE CASCADE,rule_id TEXT NOT NULL REFERENCES agent_rules(id),draft INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS agent_mileage(vehicle INTEGER NOT NULL,month TEXT NOT NULL,km REAL NOT NULL,PRIMARY KEY(vehicle,month));
             """)
 
@@ -211,6 +219,75 @@ class Agent:
             db.execute("INSERT INTO agent_jobs(id,steps,status,due,created) VALUES(?,?,'queued',?,?)",(i,json.dumps(steps),due.isoformat(),utc()))
         return {"id":i}
 
+    def file_version(self,i):
+        # Watch only an explicitly selected live file, never an entire directory.
+        try:
+            path,name,size=self.workspace.download(i)
+            stat=path.stat()
+            return json.dumps([name,size,stat.st_mtime_ns])
+        except (ValueError,OSError):return ""
+    def rules(self):
+        with closing(self.chat.connect()) as db:
+            return [dict(r) for r in db.execute("SELECT id,scenario,mode,interval_seconds,file_id,next_check,enabled,current_month,draft,status,last_job FROM agent_rules ORDER BY next_check")]
+    def rule_action(self,v):
+        if not isinstance(v,dict):raise ValueError("Некорректное правило")
+        action=v.get("action")
+        if action=="list" and set(v)=={"action"}:return {"rules":self.rules()}
+        if v.get("confirm") is not True:raise ValueError("Нужно разрешение на автоматизацию")
+        if action=="disable" and set(v)=={"action","id","confirm"}:
+            if not isinstance(v["id"],str):raise ValueError("ID правила")
+            with closing(self.chat.connect()) as db,db:
+                db.execute("UPDATE agent_rules SET enabled=0,status='disabled' WHERE id=?",(v["id"],))
+            return {"rules":self.rules()}
+        if action=="cancel" and set(v)=={"action","id","confirm"}:
+            if not isinstance(v["id"],str):raise ValueError("ID задачи")
+            with closing(self.chat.connect()) as db,db:
+                if db.execute("UPDATE agent_jobs SET status='cancelled' WHERE id=? AND status='queued'",(v["id"],)).rowcount!=1:raise ValueError("Отменить можно только ожидающую задачу")
+            return {"ok":True}
+        if action!="add" or set(v)!={"action","scenario","mode","minutes","file","current_month","draft","confirm"}:raise ValueError("Неизвестное действие")
+        mode=v["mode"];minutes=v["minutes"];file=v["file"]
+        if mode not in ("interval","file") or type(minutes) is not int or not 60<=minutes<=10080 or type(v["current_month"]) is not bool or type(v["draft"]) is not bool or not isinstance(v["scenario"],str):raise ValueError("Интервал 60–10080 минут")
+        steps=self.validate(self.scenario(v["scenario"]))
+        version=""
+        if mode=="file":
+            if type(file) is not int or file<1:raise ValueError("Выберите файл")
+            version=self.file_version(file)
+            if not version:raise ValueError("Файл недоступен")
+        elif file is not None:raise ValueError("Файл нужен только для наблюдения")
+        i=uuid4().hex
+        with closing(self.chat.connect()) as db,db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT COUNT(*) FROM agent_rules").fetchone()[0]>=30:raise ValueError("Лимит 30 правил")
+            db.execute("INSERT INTO agent_rules(id,scenario,steps,mode,interval_seconds,file_id,file_version,next_check,enabled,current_month,draft,status) VALUES(?,?,?,?,?,?,?,?,1,?,?,?)",(i,v["scenario"],json.dumps(steps),mode,minutes*60,file,version,time.time()+minutes*60,int(v["current_month"]),int(v["draft"]),"waiting"))
+        return {"id":i,"rules":self.rules()}
+    def tick_rules(self,now=None):
+        now=time.time() if now is None else now
+        with closing(self.chat.connect()) as db:
+            row=db.execute("SELECT * FROM agent_rules WHERE enabled=1 AND next_check<=? ORDER BY next_check LIMIT 1",(now,)).fetchone()
+        if not row:return False
+        version=self.file_version(row["file_id"]) if row["mode"]=="file" else ""
+        with closing(self.chat.connect()) as db,db:
+            db.execute("BEGIN IMMEDIATE")
+            current=db.execute("SELECT * FROM agent_rules WHERE id=? AND enabled=1 AND next_check=?",(row["id"],row["next_check"])).fetchone()
+            if not current:return False
+            def status(s,delay=None):
+                db.execute("UPDATE agent_rules SET next_check=?,status=? WHERE id=?",(now+(delay or row["interval_seconds"]),s,row["id"]))
+            if row["mode"]=="file":
+                if not version:status("file_unavailable");return True
+                if version==row["file_version"]:status("unchanged");return True
+            if db.execute("SELECT 1 FROM agent_rule_jobs l JOIN agent_jobs j ON j.id=l.job_id WHERE l.rule_id=? AND j.status IN ('queued','running')",(row["id"],)).fetchone():
+                status("pending",60);return True
+            if db.execute("SELECT COUNT(*) FROM agent_jobs WHERE status IN ('queued','running')").fetchone()[0]>=50:
+                status("queue_full",60);return True
+            steps=json.loads(row["steps"])
+            if row["current_month"]:
+                for s in steps:
+                    if READ[s["tool"]]["month"]:s["month"]=date.today().strftime("%Y-%m")
+            steps=self.validate(steps);job=uuid4().hex
+            db.execute("INSERT INTO agent_jobs(id,steps,status,due,created) VALUES(?,?,'queued',?,?)",(job,json.dumps(steps),utc(),utc()))
+            db.execute("INSERT INTO agent_rule_jobs VALUES(?,?,?)",(job,row["id"],row["draft"]))
+            db.execute("UPDATE agent_rules SET file_version=?,last_job=?,next_check=?,status='queued' WHERE id=?",(version,job,now+row["interval_seconds"],row["id"]))
+        return True
     def tick(self):
         with closing(self.chat.connect()) as db,db:
             db.execute("BEGIN IMMEDIATE")
@@ -222,7 +299,12 @@ class Agent:
         except Exception as e:
             result={"error":type(e).__name__};status="error"
         with closing(self.chat.connect()) as db,db:
+            link=db.execute("SELECT * FROM agent_rule_jobs WHERE job_id=?",(r["id"],)).fetchone()
+            if link:
+                if link["draft"] and status=="done":result["draft"]="ЧЕРНОВИК · требуется проверка\n"+"\n\n".join(s["text"] for s in result["steps"])[:12000]
+                db.execute("UPDATE agent_rules SET status=? WHERE id=? AND enabled=1 AND last_job=?",(status,link["rule_id"],r["id"]))
             db.execute("UPDATE agent_jobs SET status=?,result=? WHERE id=?",(status,json.dumps(result,ensure_ascii=False),r["id"]))
+            db.execute("DELETE FROM agent_jobs WHERE status IN ('done','error','cancelled') AND id IN (SELECT id FROM agent_jobs WHERE status IN ('done','error','cancelled') ORDER BY created DESC,id DESC LIMIT -1 OFFSET 300)")
         return True
 
     def start(self):
@@ -231,14 +313,19 @@ class Agent:
             db.execute("UPDATE agent_jobs SET status='queued' WHERE status='running'")
         def loop():
             while not self.stop.is_set():
-                try:self.tick()
+                try:
+                    if time.monotonic()>=self.next_rules_check:
+                        self.next_rules_check=time.monotonic()+30
+                        self.tick_rules()
+                        if self.index_refresh:self.index_refresh()
+                    self.tick()
                 except Exception:pass
                 self.stop.wait(2)
         self.worker=threading.Thread(target=loop,daemon=True);self.worker.start()
 
     def state(self):
         with closing(self.chat.connect()) as db:
-            return {"registry":registry(),"scenarios":[dict(r) for r in db.execute("SELECT id,name,created FROM agent_scenarios ORDER BY created DESC")],"jobs":[{**dict(r),"result":json.loads(r["result"]) if r["result"] else None} for r in db.execute("SELECT id,status,due,result,created FROM agent_jobs ORDER BY created DESC LIMIT 30")],"runs":[dict(r) for r in db.execute("SELECT tool,status,duration_ms,detail,created FROM agent_runs ORDER BY created DESC LIMIT 100")]}
+            return {"rules":self.rules(),"registry":registry(),"scenarios":[dict(r) for r in db.execute("SELECT id,name,created FROM agent_scenarios ORDER BY created DESC")],"jobs":[{**dict(r),"result":json.loads(r["result"]) if r["result"] else None} for r in db.execute("SELECT id,status,due,result,created FROM agent_jobs ORDER BY created DESC LIMIT 30")],"runs":[dict(r) for r in db.execute("SELECT tool,status,duration_ms,detail,created FROM agent_runs ORDER BY created DESC LIMIT 100")]}
 
     def mileage(self,v):
         if not isinstance(v,dict) or set(v)!={"vehicle","month","km"} or type(v["vehicle"]) is not int or type(v["km"]) not in (int,float) or not 0<v["km"]<=1000000:raise ValueError("Некорректный пробег")

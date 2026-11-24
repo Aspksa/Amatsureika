@@ -82,7 +82,7 @@ class Router:
         self.knowledge=Knowledge(chat,cloud)
         self.cognitive=CognitiveTools(workspace,self.knowledge,self.agent,extract)
         self.lock=threading.RLock()
-        self.plans=OrderedDict()
+        self.plans=OrderedDict();self.next_index=0;self.agent.index_refresh=self.background_index
         self.fts=True
         try:
             with closing(chat.connect()) as db, db:
@@ -143,6 +143,26 @@ class Router:
             result.append(("file",r["id"],r["name"],"",r["updated"],r["updated"]+"|"+str(stat.st_mtime_ns),path))
         return result
 
+    def refresh_index(self,db,sources):
+        metadata={(source,i) for source,i,*_ in sources}
+        versions={(r[0],r[1]):r[2] for r in db.execute("SELECT * FROM routing_workspace_versions")}
+        for source,i,title,body,stamp,version,path in sources:
+            if versions.get((source,i))==version: continue
+            if path is not None: body=extract(path,title)
+            db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
+            db.execute("INSERT INTO routing_workspace_fts(source,item_id,title,body) VALUES(?,?,?,?)",(source,i,title,body))
+            db.execute("INSERT OR REPLACE INTO routing_workspace_versions VALUES(?,?,?)",(source,i,version))
+        for source,i in versions.keys()-metadata:
+            db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
+            db.execute("DELETE FROM routing_workspace_versions WHERE source=? AND item_id=?",(source,i))
+
+    def background_index(self):
+        if not self.fts or time.monotonic()<self.next_index:return
+        self.next_index=time.monotonic()+120
+        with closing(self.chat.connect()) as db,db:
+            db.execute("BEGIN IMMEDIATE")
+            self.refresh_index(db,self.sources(db))
+
     def search(self,q,scope="all"):
         terms=tokens(q)
         if not terms: return []
@@ -154,16 +174,7 @@ class Router:
             sources=self.sources(db)
             metadata={(source,i):(title,stamp) for source,i,title,body,stamp,version,path in sources}
             if self.fts:
-                versions={(r[0],r[1]):r[2] for r in db.execute("SELECT * FROM routing_workspace_versions")}
-                for source,i,title,body,stamp,version,path in sources:
-                    if versions.get((source,i))==version: continue
-                    if path is not None: body=extract(path,title)
-                    db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
-                    db.execute("INSERT INTO routing_workspace_fts(source,item_id,title,body) VALUES(?,?,?,?)",(source,i,title,body))
-                    db.execute("INSERT OR REPLACE INTO routing_workspace_versions VALUES(?,?,?)",(source,i,version))
-                for source,i in versions.keys()-metadata.keys():
-                    db.execute("DELETE FROM routing_workspace_fts WHERE source=? AND item_id=?",(source,i))
-                    db.execute("DELETE FROM routing_workspace_versions WHERE source=? AND item_id=?",(source,i))
+                self.refresh_index(db,sources)
                 chatrows=db.execute("""SELECT m.* FROM routing_chat_fts JOIN chat_messages m ON m.id=routing_chat_fts.rowid
                     WHERE routing_chat_fts MATCH ? ORDER BY bm25(routing_chat_fts),m.id DESC LIMIT 60""",(match,)).fetchall()
                 for r in db.execute("SELECT source,item_id,title,body FROM routing_workspace_fts WHERE routing_workspace_fts MATCH ? ORDER BY bm25(routing_workspace_fts) LIMIT 60",(match,)):
@@ -312,11 +323,19 @@ class Router:
             run=self.agent.run(agent_steps,progress=progress)
             if not run['ok']:meta['warnings'].append('Не все шаги выполнены; результат неполный.')
             meta["tools"].extend(s["tool"] for s in run["steps"]);meta["steps"]=[{"tool":s["tool"],"status":s["status"]} for s in run["steps"]]
+            if run["ok"]:meta["verified_steps"]=agent_steps
             advanced_answer="Локальный сценарий:\n"+"\n\n".join(s["text"] for s in run["steps"])+"\n"+run["snapshot"]
             advanced_sources=[h for s in run["steps"] for h in s["sources"]]
         tool=command(q) if advanced_answer is None and not attachment_ids else None
         report=self.tools.run(tool) if tool else None
         hits=self.search(question) if report is None and advanced_answer is None else []
+        if report is None and advanced_answer is None and not attachment_ids and not hits:
+            # Only lexical fallback; no cloud, no external side effects.
+            shorter=" ".join(tokens(question)[:4])
+            if shorter and shorter!=question:
+                hits=self.search(shorter)
+                meta["search_passes"]=2
+        meta.setdefault("search_passes",1 if report is None and advanced_answer is None else 0)
         attachment_hits=[]
         for rid in attachment_ids:
             path,title,size=self.workspace.download(rid)
@@ -354,11 +373,11 @@ class Router:
         lookup=not attachment_ids and bool(re.match(r"^\s*(найди|покажи|вспомни|поиск|что (?:я|мы) (?:писал|говорил))\b",q.casefold()))
         # Explicit retrieval, not arbitrary factual inference. Conflicts are
         # conservative possible discrepancies, not an AI verdict.
-        conflicts=[]
+        conflicts=[];conflict_pairs=[]
         for i,a in enumerate(hits):
             for b in hits[i+1:]:
                 if a["source"]==b["source"]=="work" and a["title"]==b["title"] and a["coverage"]==b["coverage"]==1 and a["text"]!=b["text"]:
-                    conflicts.append("Несколько разных рабочих записей: "+a["title"]);break
+                    conflicts.append("Несколько разных рабочих записей: "+a["title"]);conflict_pairs.append([f"work #{a['id']}",f"work #{b['id']}"]);break
         conflicts=list(dict.fromkeys(conflicts))[:3]
         sufficient=count_answer is not None or (lookup and bool(hits) and hits[0]["coverage"]>=.75 and not conflicts)
         links=evidence_links(hits) if count_answer is None else []
@@ -392,7 +411,9 @@ class Router:
             if links:local+="\nПересечения источников (общие слова, не причинность): "+"; ".join(x["from"]+" ↔ "+x["to"]+": "+", ".join(x["terms"]) for x in links[:4])
         if meta.get("document_summary") and count_answer is None:local=meta["document_summary"]+"\n\n"+local
         meta["sources"]=[{"source":h["source"],"id":h["id"],"title":h["title"]} for h in hits[:8]]
-        meta["links"]=links[:8];meta["missing"]=missing;meta["conflicts"]=conflicts
+        meta["links"]=links[:8];meta["missing"]=missing;meta["conflicts"]=conflicts;meta["conflict_pairs"]=conflict_pairs[:3] if conflicts else []
+        meta["evidence_status"]="local_result" if count_answer is not None else "retrieval_only" if hits else "insufficient"
+        meta["source_groups"]={kind:sum(h["source"]==kind for h in hits) for kind in ("memory","work","file")}
         if missing:meta["warnings"].append("Неподтверждённые термины: "+", ".join(missing))
         if conflicts:meta["warnings"].extend(conflicts)
         plan={"web_offer":hints["web"] if not mutation and not attachment_ids else None,"metadata":meta,"token":uuid4().hex,"hits":hits,"intent":"edit" if mutation else "workflow" if advanced_answer is not None else "tool" if report is not None else "count" if count_answer is not None else "lookup" if lookup else "reasoning","sufficient":sufficient,"conflicts":conflicts,"context":context,"local":local,"fts":self.fts,"mutation":mutation,"missing":missing,"links":links}
@@ -426,12 +447,16 @@ class Router:
             conflicts=possible_conflicts(plan["hits"],sources)
             plan["conflicts"]=(plan["conflicts"]+conflicts)[:6]
             meta["conflicts"]=plan["conflicts"];meta["warnings"].extend(conflicts)
+            for note in conflicts:
+                match=re.search(r"(work|file) #(\d+)",note)
+                if match:meta.setdefault("conflict_pairs",[]).append([match[0],"web"])
             parts=["[Интернет-источник; непроверенная выдержка; "+p["url"]+"; дата "+(p["date"] or "не указана")+"] "+p["title"]+" "+p["excerpt"] for p in sources]
             plan["context"]=bounded_context([plan["context"][:2300]]+parts,CONTEXT_LIMIT)
             # No hallucinated synthesis offline. Preserve local results and show excerpts.
             plan["local"]+="\n\nИнтернет-результаты (не проверенные утверждения):\n"+"\n\n".join(parts)
             if not sources:plan["local"]+="\nНет доступных выдержек."
             if conflicts:plan["local"]+="\n"+"\n".join(conflicts)
+            meta["evidence_status"]="external_excerpts" if sources else "insufficient"
             plan["sufficient"]=False
             # Allow time for the subsequent independent cloud consent.
             self.plans[value["token"]]=(time.monotonic(),item[1],plan)

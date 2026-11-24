@@ -4,6 +4,10 @@ import re
 import math
 import time
 import statistics as stats
+import json
+import csv
+import copy
+from functools import lru_cache
 from collections import Counter
 from contextlib import closing
 from datetime import date,datetime,timezone
@@ -26,6 +30,23 @@ def analyze(values):
     slope=sum((i-xmean)*(y-mean) for i,y in enumerate(xs))/sum((i-xmean)**2 for i in range(n))
     low,high=min(xs),max(xs)
     return {"count":n,"sum":sum(xs),"mean":mean,"median":stats.median(xs),"min":low,"max":high,"stdev":stats.stdev(xs),"slope_per_observation":slope,"next_linear_estimate":mean+slope*(n-xmean),"values":xs,"note":"Линейная оценка по порядку наблюдений; не гарантия прогноза и не причинный вывод."}
+
+@lru_cache(maxsize=32)
+def cached_series(values):
+    return analyze(list(values))
+
+def series_analysis(values,period):
+    if type(period) is not int or not 2<=period<=52:raise ValueError("Период 2–52 наблюдения")
+    out=copy.deepcopy(cached_series(tuple(number(x) for x in values))) if isinstance(values,list) and 2<=len(values)<=500 else analyze(values)
+    xs=out["values"];n=len(xs)
+    if n<3*period:return {**out,"seasonality":None,"note":"Для оценки сезонности нужны минимум три полных цикла."}
+    slope=out["slope_per_observation"];mean=out["mean"];mid=(n-1)/2
+    detrended=[y-(mean+slope*(i-mid)) for i,y in enumerate(xs)]
+    means=[stats.mean(detrended[i::period]) for i in range(period)]
+    center=stats.mean(means);effects=[v-center for v in means]
+    residual=[v-effects[i%period] for i,v in enumerate(detrended)]
+    base=sum(v*v for v in detrended);remaining=sum(v*v for v in residual)
+    return {**out,"seasonality":{"period":period,"cycles":n//period,"phase_offsets":effects,"explained_fraction":max(0,min(1,1-remaining/base)) if base else 0,"next_estimate":out["next_linear_estimate"]+effects[n%period]},"note":"Описательная оценка для равномерных наблюдений с заданным периодом. Не проверка статистической значимости и не гарантия прогноза."}
 
 def triple(v):
     if not isinstance(v,list) or len(v)!=3:raise ValueError("Факт: [субъект, свойство, значение]")
@@ -77,6 +98,59 @@ class CognitiveTools:
         if any(not x for x in header) or len(set(header))!=len(header):raise ValueError("Неоднозначные заголовки")
         if any(len(row)>len(header) for row in rows[1:]):raise ValueError("Лишние столбцы")
         return header,[dict(zip(header,row+[""]*(len(header)-len(row)))) for row in rows[1:]]
+    def profile(self,i):
+        header,rows=self.table(i)
+        result=[]
+        for key in header:
+            entries=[r[key].strip() for r in rows if r[key].strip()]
+            numbers=[]
+            for x in entries:
+                try:numbers.append(number(float(x.replace(",","."))))
+                except ValueError:pass
+            result.append({"column":key,"nonempty":len(entries),"missing":len(rows)-len(entries),"distinct":len(set(entries)),"numeric":len(numbers),"analysis":copy.deepcopy(cached_series(tuple(numbers))) if len(numbers)>=2 and len(numbers)==len(entries) else None})
+            if result[-1]["analysis"]:result[-1]["analysis"].pop("values",None)
+        return {"file":i,"rows":len(rows),"columns":result,"preview":rows[:10],"note":"Первый лист, до 500 строк; формулы не вычисляются."}
+
+    def research_documents(self,ids):
+        if not isinstance(ids,list) or not 2<=len(ids)<=6 or any(type(i) is not int for i in ids) or len(set(ids))!=len(ids):raise ValueError("Выберите 2–6 разных файлов")
+        docs=[];wordsets={};errors=[]
+        for i in ids:
+            try:
+                path,title,size=self.workspace.download(i)
+                if size>256*1024:raise ValueError("Документ больше 256 КиБ")
+                body=self.extract(path,title)
+                if not body:raise ValueError("Текст недоступен")
+                d=self.document(i);docs.append(d)
+                wordsets[i]=set(re.findall(r"\w{5,}",body.casefold()))
+            except (ValueError,OSError) as e:errors.append({"id":i,"error":str(e)})
+        links=[]
+        for a in docs:
+            for b in docs:
+                if a["file"]>=b["file"]:continue
+                common=wordsets[a["file"]]&wordsets[b["file"]]
+                aa={x["subject"].casefold():x["value"] for x in a["candidate_facts"]}
+                bb={x["subject"].casefold():x["value"] for x in b["candidate_facts"]}
+                conflicts=[{"field":k,"a":aa[k],"b":bb[k]} for k in sorted(aa.keys()&bb.keys()) if aa[k]!=bb[k]][:10]
+                if common or conflicts:links.append({"a":a["file"],"b":b["file"],"terms":sorted(common)[:15],"common_count":len(common),"possible_conflicts":conflicts})
+        return {"documents":docs,"links":links,"errors":errors,"note":"Лексические связи и возможные расхождения полей; не причинность, не доказательство, что документы описывают один объект."}
+
+    def convert_table(self,i,fmt):
+        if fmt not in ("csv","json"):raise ValueError("CSV или JSON")
+        header,rows=self.table(i)
+        if fmt=="json":data=json.dumps(rows,ensure_ascii=False,indent=2).encode("utf-8")
+        else:
+            stream=io.StringIO()
+            writer=csv.writer(stream,delimiter=";")
+            def safe_cell(x):
+                x=str(x)
+                return "'"+x if x.lstrip().startswith(("=","+","-","@")) or x.startswith(("\t","\r","\n")) else x
+            writer.writerow([safe_cell(x) for x in header])
+            writer.writerows([safe_cell(r[k]) for k in header] for r in rows)
+            data=stream.getvalue().encode("utf-8-sig")
+        if len(data)>5*1024*1024:raise ValueError("Выходной файл слишком большой")
+        name="converted-"+uuid4().hex[:12]+"."+fmt
+        return {**self.workspace.upload(None,name,io.BytesIO(data),len(data)),"name":name,"rows":len(rows)}
+
     def compare(self,a,b,key):
         key=string(key,250);ha,ra=self.table(a);hb,rb=self.table(b)
         if key not in ha or key not in hb:raise ValueError("Ключ отсутствует в таблице")
@@ -144,7 +218,14 @@ class CognitiveTools:
         if not isinstance(v,dict):raise ValueError("Некорректная операция")
         a=v.get("action");begin=time.monotonic()
         try:
-            if a=="stats" and set(v)=={"action","values"}:r=analyze(v["values"])
+            if a=="stats" and set(v)=={"action","values"}:
+                xs=v["values"]
+                r=copy.deepcopy(cached_series(tuple(number(x) for x in xs))) if isinstance(xs,list) and 2<=len(xs)<=500 else analyze(xs)
+            elif a=="seasonality" and set(v)=={"action","values","period"}:r=series_analysis(v["values"],v["period"])
+            elif a=="profile" and set(v)=={"action","file"}:r=self.profile(v["file"])
+            elif a=="research_docs" and set(v)=={"action","files"}:r=self.research_documents(v["files"])
+            elif a=="convert" and set(v)=={"action","file","format","confirm"} and v["confirm"] is True:r=self.convert_table(v["file"],v["format"])
+            elif a=="anomalies" and set(v)=={"action"}:r=self.agent.advanced.anomalies()
             elif a=="column" and set(v)=={"action","file","column"}:
                 header,rows=self.table(v["file"]);column=string(v["column"],250)
                 if column not in header:raise ValueError("Столбец отсутствует")
