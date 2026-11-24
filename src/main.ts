@@ -89,11 +89,11 @@ function pair(combined:boolean){
 byId("grow").onclick=()=>{if(selected<0){detail.textContent="Сначала выберите кластер.";return}if(grow(selected))detail.textContent=names[selected]+": добавлен демонстрационный узел."};
 byId("connect").onclick=()=>pair(false);
 byId("combine").onclick=()=>pair(true);
-const chat=byId("chat"),chatToggle=byId("chatToggle"),messages=byId("messages"),prompt=byId<HTMLInputElement>("prompt");
+const chat=byId("chat"),chatToggle=byId("chatToggle"),messages=byId("messages"),chatPrompt=byId<HTMLInputElement>("prompt");
 if(matchMedia("(max-width:720px)").matches){chat.hidden=true;chatToggle.setAttribute("aria-expanded","false")}
-chatToggle.onclick=()=>{chat.hidden=!chat.hidden;chatToggle.setAttribute("aria-expanded",String(!chat.hidden));if(!chat.hidden)prompt.focus()};
+chatToggle.onclick=()=>{chat.hidden=!chat.hidden;chatToggle.setAttribute("aria-expanded",String(!chat.hidden));if(!chat.hidden)chatPrompt.focus()};
 function message(text:string,kind:string){const p=document.createElement("p");p.className=kind;p.textContent=text;messages.append(p);while(messages.children.length>100)messages.firstElementChild?.remove();messages.scrollTop=messages.scrollHeight}
-byId<HTMLFormElement>("chatForm").onsubmit=e=>{e.preventDefault();const raw=prompt.value.trim();if(!raw)return;prompt.value="";message(raw,"user-message");const cmd=raw.toLocaleLowerCase("ru").replace(/[.!?]+$/,"");let reply="Я пока работаю в локальном демонстрационном режиме. Доступны команды: кольца, соты, ядро, рост, связи, объединить.";
+byId<HTMLFormElement>("chatForm").onsubmit=e=>{e.preventDefault();const raw=chatPrompt.value.trim();if(!raw)return;chatPrompt.value="";message(raw,"user-message");const cmd=raw.toLocaleLowerCase("ru").replace(/[.!?]+$/,"");let reply="Я пока работаю в локальном демонстрационном режиме. Доступны команды: кольца, соты, ядро, рост, связи, объединить.";
  if(cmd==="кольца"||cmd==="соты"||cmd==="ядро"){setMode(cmd==="кольца"?"radial":cmd==="соты"?"hex":"compact");reply="Режим карты изменён."}
  else if(cmd==="рост"){reply=selected>=0&&grow(selected)?"Добавлен демонстрационный узел.":"Выберите кластер или проверьте предел карты."}
  else if(cmd==="связи"||cmd==="объединить"){reply=pair(cmd==="объединить")?"Демонстрационная операция выполнена.":"Выберите два разных кластера без повторной операции."}
