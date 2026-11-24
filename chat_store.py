@@ -1,5 +1,6 @@
 """Chronological chat clusters, 200 committed messages each, one local SQLite DB."""
 import sqlite3
+import logging
 from contextlib import closing
 from datetime import datetime, timezone
 from uuid import UUID
@@ -23,7 +24,48 @@ class ChatStore:
                     text TEXT NOT NULL, created_at TEXT NOT NULL, request_id TEXT NOT NULL,
                     UNIQUE(cluster_id, position), UNIQUE(request_id, role)
                 );
+                CREATE TRIGGER IF NOT EXISTS chat_capacity_insert BEFORE INSERT ON chat_messages
+                WHEN NEW.position < 1 OR NEW.position > 200 OR
+                     (SELECT COUNT(*) FROM chat_messages WHERE cluster_id=NEW.cluster_id) >= 200
+                BEGIN SELECT RAISE(ABORT,'Cluster capacity exceeded'); END;
+                CREATE TRIGGER IF NOT EXISTS chat_capacity_update BEFORE UPDATE OF cluster_id,position ON chat_messages
+                WHEN NEW.position < 1 OR NEW.position > 200 OR
+                     (NEW.cluster_id != OLD.cluster_id AND (SELECT COUNT(*) FROM chat_messages WHERE cluster_id=NEW.cluster_id) >= 200)
+                BEGIN SELECT RAISE(ABORT,'Cluster capacity exceeded'); END;
             """)
+        self.startup_health = self.health()
+        if not self.startup_health["ok"]:
+            logging.error("Chat integrity failure: %s", self.startup_health["issues"])
+
+    def health(self):
+        issues = []
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN")
+            if [row[0] for row in db.execute("PRAGMA quick_check")] != ["ok"]:
+                issues.append("sqlite_integrity")
+            if db.execute("PRAGMA foreign_key_check").fetchone():
+                issues.append("foreign_keys")
+            clusters = self.clusters(db)
+            total = 0
+            previous = None
+            for i, c in enumerate(clusters):
+                total += c["count"]
+                if c["previous_id"] != previous or not 0 <= c["count"] <= CAPACITY or (i < len(clusters)-1 and c["count"] != CAPACITY):
+                    issues.append("cluster_chain")
+                    break
+                previous = c["id"]
+            if clusters and clusters[-1]["count"] == CAPACITY:
+                issues.append("missing_successor")
+            if db.execute("""SELECT 1 FROM chat_messages GROUP BY cluster_id
+                         HAVING MIN(position) != 1 OR MAX(position) != COUNT(*) LIMIT 1""").fetchone():
+                issues.append("message_positions")
+            if db.execute("""SELECT 1 FROM chat_messages GROUP BY request_id
+                         HAVING COUNT(*) != 2 OR SUM(role='user') != 1 OR SUM(role='assistant') != 1 LIMIT 1""").fetchone():
+                issues.append("message_pairs")
+            if total != db.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0]:
+                issues.append("message_count")
+            return {"ok": not issues, "issues": sorted(set(issues)), "clusters": len(clusters), "messages": total,
+                    "active_cluster": clusters[-1]["id"] if clusters else None}
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=10)
@@ -51,6 +93,8 @@ class ChatStore:
             return {"clusters": clusters, "messages": [dict(row) for row in rows]}
 
     def append(self, value):
+        if not self.startup_health["ok"]:
+            raise RuntimeError("Chat integrity check failed; writes disabled")
         if not isinstance(value, dict) or set(value) != {"text", "request_id"}:
             raise ValueError("Invalid message")
         text, rid = value["text"], value["request_id"]
