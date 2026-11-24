@@ -620,7 +620,7 @@ function updateToolState(){
  const local=byId<HTMLButtonElement>("toolLocal");local.setAttribute("aria-pressed",String(localOnly));local.textContent=localOnly?"Только локально ✓":"Только локально";
  byId("toolCloudState").textContent=cloudAvailable?"Модель подключена":"Модель не подключена";
  byId<HTMLButtonElement>("stopPreparation").hidden=!preparing;
- for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach"])byId<HTMLButtonElement>(id).disabled=busy;
+ for(const id of ["toolLocal","toolSearch","toolWork","toolDocs","toolCloud","toolCalculator","toolReports","toolWorkflow","toolAgent","toolAttach","toolImport"])byId<HTMLButtonElement>(id).disabled=busy;
 }
 function checkPreparation(){if(cancelPreparation)throw Error("Подготовка отменена")}
 byId("stopPreparation").onclick=()=>{if(!preparing)return;cancelPreparation=true;clearFlow();for(const name of ["routingConsent","editConsent"]){const d=byId<HTMLDialogElement>(name);if(d.open)d.close("cancel")}chatStatus.textContent="Отмена подготовки…"};
@@ -696,6 +696,20 @@ byId("agentSave").onclick=()=>void agentAction(async()=>{const name=byId<HTMLInp
 byId("agentReplay").onclick=()=>void agentAction(async()=>{if(!agentScenarios.value)throw Error("Выберите сценарий");showAgentResult(await agentApi<AgentResult>("replay",{id:agentScenarios.value}));await refreshAgent()});
 byId("agentQueue").onclick=()=>void agentAction(async()=>{const value=byId<HTMLInputElement>("agentDue").value;if(!value||!agentScenarios.value)throw Error("Выберите сценарий и время");const due=new Date(value);if(!Number.isFinite(due.getTime()))throw Error("Некорректное время");await agentApi("queue",{scenario:agentScenarios.value,due:due.toISOString()});await refreshAgent();agentOutput.textContent="Задача добавлена в локальную очередь"});
 byId("agentMileageSave").onclick=()=>void agentAction(async()=>{const v=Number(byId<HTMLInputElement>("agentVehicle").value),km=Number(byId<HTMLInputElement>("agentKm").value);if(!confirm("Сохранить месячный пробег автомобиля #"+v+"?"))return;await agentApi("mileage",{vehicle:v,month:agentMonth.value,km});agentOutput.textContent="Пробег сохранён"});
+type ImportPlan={token:string;kind:string;title:string;count:number;rows:Record<string,string|number|null>[]};
+const importDialog=byId<HTMLDialogElement>("importDialog"),importFile=byId<HTMLSelectElement>("importFile"),importKind=byId<HTMLSelectElement>("importKind"),importOutput=byId("importOutput"),importCommit=byId<HTMLButtonElement>("importCommit");
+let importPlan:ImportPlan|null=null,importBusy=false;
+function invalidateImport(){importPlan=null;importCommit.disabled=true;importOutput.replaceChildren()}
+byId("toolImport").onclick=async()=>{closeTools();if(busy||importBusy)return;invalidateImport();importDialog.showModal();await refreshWorkspaceMap();if(!importDialog.open)return;importFile.replaceChildren();for(const f of workspaceMap.files.filter(f=>/\.(csv|xlsx)$/i.test(f.name))){const o=document.createElement("option");o.value=String(f.id);o.textContent=f.name;importFile.append(o)}};
+byId("importClose").onclick=()=>{if(!importBusy)importDialog.close()};
+importDialog.addEventListener("cancel",e=>{if(importBusy)e.preventDefault()});
+function showImport(p:ImportPlan){importPlan=p;importOutput.replaceChildren();const title=document.createElement("p");title.textContent=p.title+" · "+p.count+" новых записей. Существующие записи не перезаписываются.";importOutput.append(title);
+ const scroll=document.createElement("div");scroll.className="workspace-table";const table=document.createElement("table"),head=document.createElement("tr");const columns=Object.keys(p.rows[0]??{});for(const c of columns){const th=document.createElement("th");th.textContent=c;head.append(th)}table.append(head);for(const row of p.rows){const tr=document.createElement("tr");for(const c of columns){const td=document.createElement("td");td.textContent=String(row[c]??"—");tr.append(td)}table.append(tr)}scroll.append(table);importOutput.append(scroll);importCommit.disabled=false}
+async function previewImport(path:string,value:object){if(importBusy)return;invalidateImport();importBusy=true;try{showImport(await agentApi<ImportPlan>(path,value))}catch(e){importOutput.textContent=e instanceof Error?e.message:"Ошибка"}finally{importBusy=false}}
+byId<HTMLFormElement>("importForm").onsubmit=e=>{e.preventDefault();void previewImport("import-preview",{kind:importKind.value,file:Number(importFile.value)})};
+byId<HTMLFormElement>("fillForm").onsubmit=e=>{e.preventDefault();void previewImport("timesheet-preview",{employee:Number(byId<HTMLInputElement>("fillEmployee").value),start:byId<HTMLInputElement>("fillStart").value,end:byId<HTMLInputElement>("fillEnd").value,hours:Number(byId<HTMLInputElement>("fillHours").value),weekdays:byId<HTMLInputElement>("fillWeekdays").checked})};
+for(const id of ["importForm","fillForm"])byId(id).addEventListener("input",()=>{if(!importBusy)invalidateImport()});
+importCommit.onclick=async()=>{if(importBusy||!importPlan||!confirm("Добавить "+importPlan.count+" записей в SQLite?"))return;importBusy=true;const p=importPlan;try{const r=await agentApi<{count:number}>("import-commit",{token:p.token,confirm:true});invalidateImport();importOutput.textContent="Сохранено записей: "+r.count;await refreshWorkspaceMap(true)}catch(e){importOutput.textContent=e instanceof Error?e.message:"Ошибка";importCommit.disabled=false}finally{importBusy=false}};
 const attachDialog=byId<HTMLDialogElement>("attachDialog"),attachList=byId<HTMLSelectElement>("attachList");
 function attachIds(ids:number[]){
  if(busy||selected>=0)return;const old=Array.from(chatPrompt.value.matchAll(/\[Документ #(\d+)\]/g),m=>Number(m[1]));

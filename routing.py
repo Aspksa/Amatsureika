@@ -3,6 +3,7 @@ import json
 from tool_engine import ToolEngine, catalog, command, report_text
 from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
 from agent_engine import Agent, parse as agent_parse
+from work_import import Importer
 import ast
 from decimal import Decimal, localcontext, DecimalException
 import re
@@ -69,6 +70,7 @@ class Router:
         self.tools=ToolEngine(workspace,chat)
         self.advanced=AdvancedTools(workspace,self.tools,extract)
         self.agent=Agent(chat,workspace,self.tools,self.advanced)
+        self.importer=Importer(workspace)
         self.lock=threading.RLock()
         self.plans=OrderedDict()
         self.fts=True

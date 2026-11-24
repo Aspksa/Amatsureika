@@ -2,7 +2,7 @@
 import json
 import math
 import sqlite3
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -60,14 +60,14 @@ class Workspace:
             rows=db.execute("SELECT * FROM work_records ORDER BY id").fetchall()
             return {"records":[{"id":r["id"],"kind":r["kind"],"fields":json.loads(r["payload"]),"archived":bool(r["archived"]),"updated":r["updated"]} for r in rows]}
 
-    def save_work(self, data, *, expected_updated=None, audit=None):
+    def save_work(self, data, *, expected_updated=None, audit=None, connection=None):
         if not isinstance(data,dict):
             raise ValueError("Некорректная запись")
         kind=data.get("kind")
         if kind not in SCHEMA:
             raise ValueError("Неизвестный раздел")
-        with closing(self.connect()) as db, db:
-            db.execute("BEGIN IMMEDIATE")
+        with (closing(self.connect()) if connection is None else nullcontext(connection)) as db, (db if connection is None else nullcontext()):
+            if connection is None:db.execute("BEGIN IMMEDIATE")
             rid=data.get("id")
             if audit is not None:
                 done=db.execute("SELECT question,record_id FROM work_edit_audit WHERE request_id=?",(audit["request_id"],)).fetchone()
