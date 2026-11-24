@@ -39,6 +39,8 @@ class Workspace:
                 CREATE TABLE IF NOT EXISTS work_records (
                     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL,
                     archived INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS work_record_versions(id INTEGER PRIMARY KEY,record_id INTEGER NOT NULL REFERENCES work_records(id),before_state TEXT NOT NULL,after_state TEXT NOT NULL,created TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS work_versions_record ON work_record_versions(record_id,id DESC);
                 CREATE INDEX IF NOT EXISTS work_kind ON work_records(kind,archived,id);
                 CREATE TABLE IF NOT EXISTS work_edit_audit(request_id TEXT PRIMARY KEY, question TEXT NOT NULL, record_id INTEGER NOT NULL, mutation TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS disk_entries (
@@ -126,6 +128,10 @@ class Workspace:
                     db.execute("UPDATE work_records SET payload=?,updated=? WHERE id=?",(payload,now(),rid))
                 else:
                     rid=db.execute("INSERT INTO work_records(kind,payload,updated) VALUES(?,?,?)",(kind,payload,now())).lastrowid
+            current=db.execute("SELECT * FROM work_records WHERE id=?",(rid,)).fetchone()
+            # Store actual future changes only; never fabricate a historical state.
+            if not old or old["payload"]!=current["payload"] or old["archived"]!=current["archived"]:
+                db.execute("INSERT INTO work_record_versions(record_id,before_state,after_state,created) VALUES(?,?,?,?)",(rid,json.dumps(dict(old),ensure_ascii=False) if old else "null",json.dumps(dict(current),ensure_ascii=False),now()))
             if audit is not None:
                 db.execute("INSERT INTO work_edit_audit VALUES(?,?,?,?,?)",(audit["request_id"],audit["text"],rid,json.dumps(audit["mutation"],ensure_ascii=False),now()))
             return {"id":rid}
@@ -204,6 +210,14 @@ class Workspace:
                 db.execute("UPDATE disk_entries SET trashed=0,updated=? WHERE id=?",(now(),rid))
             elif action=="trash" and self.visible(db,rid):
                 db.execute("UPDATE disk_entries SET trashed=1,updated=? WHERE id=?",(now(),rid))
+            elif action=="move" and self.visible(db,rid):
+                parent=data.get("parent");self.folder(db,parent)
+                p=parent
+                while p is not None:
+                    if p==rid:raise ValueError("Нельзя переместить папку в собственное поддерево")
+                    p=self.entry(db,p)["parent"]
+                self.unique(db,parent,r["name"],rid)
+                db.execute("UPDATE disk_entries SET parent=?,updated=? WHERE id=?",(parent,now(),rid))
             elif action=="rename" and self.visible(db,rid):
                 title=name(data.get("name"))
                 self.unique(db,r["parent"],title,rid)

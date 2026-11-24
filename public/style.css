@@ -295,3 +295,5 @@ body.full-chat #stage{display:none!important}body.full-chat #chat:not([hidden]){
 .quiet-conflict{color:#e6a581}#chatContextTools{display:flex;flex-wrap:wrap;gap:8px}#chatContextTools:empty{display:none}#chatContextTools button{background:none;border:0;color:#90bfc1;padding:4px 0;font-size:11px}body[data-chat-phase]:not([data-chat-phase=idle]) #chatContextTools{display:none}
 
 .knowledge-map{width:100%;max-height:420px}.knowledge-map g[role=button]{cursor:pointer}.knowledge-map g:focus-visible circle{stroke:#fff;stroke-width:2}
+
+.workspace-insight:empty{display:none}.workspace-insight{max-height:320px;overflow:auto;margin:8px 0;padding:8px 0;color:#b2cbd3}.workspace-insight button{display:block;margin:4px 0;text-align:left}.workspace-insight svg{width:100%;max-height:140px}.workspace-insight pre{white-space:pre-wrap;overflow-wrap:anywhere}#diskPreviewText table{border-collapse:collapse}#diskPreviewText td,#diskPreviewText th{padding:5px;border-bottom:1px solid #29434f;white-space:normal}

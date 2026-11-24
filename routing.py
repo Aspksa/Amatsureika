@@ -2,6 +2,7 @@
 import json
 import io
 from report_export import xlsx, docx
+from workspace_intelligence import WorkspaceIntelligence
 from tool_engine import ToolEngine, catalog, command, report_text
 from advanced_tools import AdvancedTools, parse_command, anomaly_text, bundle_text, compare_text
 from agent_engine import Agent, parse as agent_parse
@@ -81,6 +82,7 @@ class Router:
         self.web=WebResearch(chat,workspace)
         self.knowledge=Knowledge(chat,cloud)
         self.cognitive=CognitiveTools(workspace,self.knowledge,self.agent,extract)
+        self.workspace_intelligence=WorkspaceIntelligence(self)
         self.lock=threading.RLock()
         self.plans=OrderedDict();self.inflight=set();self.web_inflight=set();self.next_index=0;self.agent.index_refresh=self.background_index
         self.fts=True

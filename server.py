@@ -40,7 +40,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        if path in ("/api/work","/api/disk","/api/disk/download","/api/workspace/map"):
+        if path in ("/api/work","/api/disk","/api/disk/download","/api/disk/pdf","/api/workspace/map"):
             if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                 return self.send_json({"error":"Invalid host"},403)
             try:
@@ -53,9 +53,14 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json(self.workspace.disk(int(query["parent"][0]) if "parent" in query else None, query.get("trash")==["1"]))
                 file,title,size=self.workspace.download(int(query["id"][0]))
                 with file.open("rb") as f:
+                    pdf=path=="/api/disk/pdf"
+                    if pdf:
+                        if Path(title).suffix.lower()!=".pdf" or f.read(5)!=b"%PDF-":raise ValueError("Не распознан PDF")
+                        f.seek(0)
                     self.send_response(200)
-                    self.send_header("Content-Type","application/octet-stream")
-                    self.send_header("Content-Disposition","attachment; filename*=UTF-8''"+quote(title,safe=""))
+                    self.send_header("Content-Type","application/pdf" if pdf else "application/octet-stream")
+                    self.send_header("Content-Disposition",("inline" if pdf else "attachment")+"; filename*=UTF-8''"+quote(title,safe=""))
+                    if pdf:self.send_header("Content-Security-Policy","default-src 'none'; sandbox")
                     self.send_header("Content-Length",str(size))
                     self.send_header("X-Content-Type-Options","nosniff")
                     self.send_header("Cache-Control","no-store")
@@ -100,7 +105,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction", "/api/routing/preview", "/api/routing/plan-stream", "/api/routing/export-result", "/api/agent/rules", "/api/routing/repair-index"):
+        if path not in ("/api/design", "/api/camera", "/api/chat", "/api/memory", "/api/cloud/key", "/api/cloud/models", "/api/cloud/connect", "/api/work", "/api/disk", "/api/disk/upload", "/api/routing/plan", "/api/routing/execute", "/api/routing/search", "/api/routing/calculate", "/api/routing/tools", "/api/routing/report", "/api/agent/state", "/api/agent/run", "/api/agent/save", "/api/agent/replay", "/api/agent/queue", "/api/agent/mileage", "/api/agent/export", "/api/routing/stream", "/api/agent/import-preview", "/api/agent/timesheet-preview", "/api/agent/import-commit", "/api/agent/web", "/api/agent/knowledge", "/api/agent/cognitive", "/api/routing/web", "/api/routing/correction", "/api/routing/preview", "/api/routing/plan-stream", "/api/routing/export-result", "/api/agent/rules", "/api/routing/repair-index", "/api/agent/workspace"):
             return self.send_error(404)
         expected = f"http://127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or self.headers.get("Origin", expected) != expected:
@@ -158,6 +163,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if path == "/api/agent/workspace":
+                return self.send_json(self.router.workspace_intelligence.dispatch(value))
             if path == "/api/agent/cognitive":
                 return self.send_json(self.router.cognitive.dispatch(value))
             if path == "/api/agent/knowledge":
