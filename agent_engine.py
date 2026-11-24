@@ -2,13 +2,14 @@
 import json
 import re
 import time
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
-from tool_engine import TOOLS
+from tool_engine import TOOLS, command
 
 def utc():
     return datetime.now(timezone.utc).isoformat()
@@ -39,6 +40,9 @@ def parse(text,previous=None):
     m=re.fullmatch(r"(?:а\s+)?за\s+(?:прошлый месяц|(\d{4}-\d{2}))[?.]?",q)
     if m and previous:
         steps=parse(previous)
+        if not steps:
+            legacy=command(previous)
+            if legacy and READ[legacy["tool"]]["month"]:steps=[{"id":"s1",**legacy,"depends":[]}]
         if steps and all(READ[s["tool"]]["month"] for s in steps):
             for s in steps:s["month"]=month_ok(m[1]) if m[1] else month_shift(s["month"],-1)
             return steps
@@ -144,7 +148,7 @@ class Agent:
             else:answer=self.metric(k,s["month"])
             self.log(k,"ok",begin,"Проверена структура")
             return {**answer,"status":"ok"}
-        except (ValueError,RuntimeError,OSError) as e:
+        except (ValueError,RuntimeError,OSError,sqlite3.Error) as e:
             self.log(k,"error",begin,type(e).__name__)
             return {"text":"Ошибка инструмента: "+str(e),"sources":[],"status":"error"}
 

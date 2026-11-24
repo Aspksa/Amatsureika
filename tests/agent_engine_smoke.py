@@ -31,5 +31,6 @@ with tempfile.TemporaryDirectory() as d:
     assert plan["sufficient"] and "Локальный сценарий" in plan["local"]
     assert r.execute({**req,"token":plan["token"],"cloud":True})["route"]=="local"
     assert parse("А за прошлый месяц?",req["text"])[0]["month"]=="2026-10"
+    assert parse("А за прошлый месяц?","Отчёт по ГСМ за 2026-11")[0]["month"]=="2026-10"
     assert c.health()["ok"]
 print("Registry, parallel DAG, scenario replay, persistent queue, permissions, context and no cloud passed")
